@@ -1,8 +1,19 @@
 """
 BDF Output Parser — Orbital Classifier
 
-根据原子电子组态 + SAO 解析结果，自动区分芯层(core)和价层(active)轨道。
-为 MCSCF/MRCI 活性空间选择提供每不可约表示的轨道数。
+五层级自动分类 + 用户覆盖 → MCSCF 输入参数。
+
+五层级:
+  frozen_core: [Rn] n<max_n, 深芯 → close (与 outer_core 合并, 计算量不大)
+  outer_core:  [Rn] n=max_n, 外芯 → close
+  inactive:    valence 满占据 → close (或 active, 用户决定)
+  active:      valence 部分占据 → active + actel
+  virtual:     未占据基函数 → 活性空间中空轨道自动处理
+
+MCSCF 关键词:
+  close:  每 irrep 的 fz+oc (+ optional inactive) 轨道数
+  active: 每 irrep 的 active 轨道数
+  actel:  active 电子总数
 """
 
 from __future__ import annotations
