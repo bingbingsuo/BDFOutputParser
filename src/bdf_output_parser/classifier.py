@@ -65,17 +65,25 @@ class OrbitalClassifier:
         # 对每个 irrep 分类
         per_irrep: list[IrrepClassification] = []
         for irrep_data in sao.irreps:
+            fz_set: set[tuple] = set()
+            oc_set: set[tuple] = set()
+            vl_set: set[tuple] = set()
             fz_labels, oc_labels, vl_labels = [], [], []
+
             for sao_line in irrep_data.saos:
                 for ao in sao_line.aos:
                     label = f"{ao.atom_index}{ao.element}{ao.n}{ao.l}{ao.m}"
+                    uid = (ao.atom_index, ao.n, ao.l, ao.m)
                     key = (ao.n, ao.l)
                     if key in atom_frozen.get(ao.atom_index, set()):
                         fz_labels.append(label)
+                        fz_set.add(uid)
                     elif key in atom_outer.get(ao.atom_index, set()):
                         oc_labels.append(label)
+                        oc_set.add(uid)
                     else:
                         vl_labels.append(label)
+                        vl_set.add(uid)
 
             per_irrep.append(IrrepClassification(
                 irrep=irrep_data.irrep,
@@ -86,7 +94,13 @@ class OrbitalClassifier:
                 n_frozen_core=len(fz_labels),
                 n_outer_core=len(oc_labels),
                 n_valence=len(vl_labels),
+                # 去重轨道数（每 (atom,n,l,m) 唯一）
+                n_frozen_core_orbitals=len(fz_set),
+                n_outer_core_orbitals=len(oc_set),
+                n_valence_orbitals=len(vl_set),
             ))
+
+        total_vl_orbs = sum(ir.n_valence_orbitals for ir in per_irrep)
 
         return OrbitalClassification(
             molecule="".join(atoms),
@@ -95,6 +109,7 @@ class OrbitalClassifier:
             n_frozen_core_electrons=n_fz,
             n_outer_core_electrons=n_oc,
             n_valence_electrons=n_vl,
+            total_valence_orbitals=total_vl_orbs,
             per_irrep=per_irrep,
         )
 

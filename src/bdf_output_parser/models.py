@@ -245,13 +245,16 @@ class SAOParseResult(BaseModel):
 class IrrepClassification(BaseModel):
     """单个不可约表示中的轨道三层级分类"""
     irrep: str                      # "A1"
-    norb: int                       # 总轨道数
-    frozen_core_labels: list[str] = []   # frozen core AO 标签（永不激发）
-    outer_core_labels: list[str] = []    # outer core AO 标签（MRCI 可激发）
-    valence_labels: list[str] = []       # valence AO 标签（MCSCF/MRCI 活性）
-    n_frozen_core: int = 0
+    norb: int                       # 总轨道数（基函数数）
+    frozen_core_labels: list[str] = []   # frozen core AO 标签（含重复）
+    outer_core_labels: list[str] = []    # outer core AO 标签（含重复）
+    valence_labels: list[str] = []       # valence AO 标签（含重复）
+    n_frozen_core: int = 0              # AO 标签计数（含重复）
     n_outer_core: int = 0
     n_valence: int = 0
+    n_frozen_core_orbitals: int = 0     # 去重轨道数（unique atom,n,l,m）
+    n_outer_core_orbitals: int = 0
+    n_valence_orbitals: int = 0
 
 
 class OrbitalClassification(BaseModel):
@@ -262,4 +265,5 @@ class OrbitalClassification(BaseModel):
     n_frozen_core_electrons: int = 0
     n_outer_core_electrons: int = 0
     n_valence_electrons: int = 0
+    total_valence_orbitals: int = 0     # 全部分子 unique valence 轨道总数
     per_irrep: list[IrrepClassification] = []
