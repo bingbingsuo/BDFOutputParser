@@ -262,9 +262,9 @@ SAO_IRREP_HEADER = re.compile(
     r'Irrep\s+(\S+)\s+(\d+)\s+norb\s*=\s*(\d+)'
 )
 
-# SAO label line: "  A1|1C1     1O2S0    1O2P1"
+# SAO label line: "  A1|1C1     1O2S0" or "  E1g|1C1     1U3D-1"
 SAO_LABEL_LINE = re.compile(
-    r'^\s*([A-Z]\d)\|(\d+)C(\d+)\s+(.+)$'
+    r'^\s*([A-Z]\w*)\|(\d+)C(\d+)\s+(.+)$'
 )
 
 # Individual AO label: "1O2P1" or "1O2S0"
