@@ -33,103 +33,164 @@ class OrbitalClassifier:
         overrides: dict[str, list[str]] | None = None,
     ) -> OrbitalClassification:
         """
-        三层级分类: frozen_core / outer_core / valence，每不可约表示。
+        五层级分类: frozen_core / outer_core / inactive / active / virtual。
 
-        frozen_core: 惰性气体芯中 n < max_core_n 的轨道（永不激发）
-        outer_core:  惰性气体芯中 n = max_core_n 的轨道（MRCI 可激发）
-        valence:     惰性气体芯之外的轨道（MCSCF/MRCI 活性空间）
+        frozen_core: [Rn] n < max_core_n（深层芯，永不激发）
+        outer_core:  [Rn] n = max_core_n（外层芯，MRCI 可关联）
+        inactive:    valence shell 满占据（2×(2l+1) e⁻）
+        active:      valence shell 部分占据（MCSCF 活性空间）
+        virtual:     所有未占据基函数
 
-        overrides 允许用户调整默认分类:
-          {"frozen_core": ["U:6p", "F:2s"],  # 移入 frozen_core
-           "outer_core":  ["U:5d"],           # 移入 outer_core
-           "valence":     ["U:5d", "F:2p"]}   # 移入 valence
-
-        格式: "Element:nl" — "U:5f", "F:2p"
-        多元素同覆盖: 对每个 atom_index 匹配 element symbol 执行覆盖。
+        overrides 格式:
+          {"frozen_core": ["F:2s", "F:2p"], "inactive": ["U:7s"]}
         """
         overrides = overrides or {}
-        atom_frozen: dict[int, set[tuple[int, str]]] = {}
-        atom_outer:  dict[int, set[tuple[int, str]]] = {}
-        atom_valence: dict[int, set[tuple[int, str]]] = {}
+        atom_tiers: dict[int, dict[str, set[tuple[int, str]]]] = {}
 
         for idx, sym in enumerate(atoms, start=1):
             fz, oc, vl = self._get_shell_tiers(sym)
 
-            # 应用用户覆盖
-            fz, oc, vl = self._apply_overrides(sym, fz, oc, vl, overrides)
+            # 将 valence 拆分为 inactive (满占据) 和 active (部分占据)
+            inactive, active = self._split_valence(sym, vl)
 
-            atom_frozen[idx] = fz
-            atom_outer[idx] = oc
-            atom_valence[idx] = vl
+            fz, oc, inactive, active = self._apply_overrides_v2(
+                sym, fz, oc, inactive, active, overrides,
+            )
 
-        # 汇总电子数
-        n_fz = n_oc = n_vl = 0
+            atom_tiers[idx] = {
+                "frozen_core": fz, "outer_core": oc,
+                "inactive": inactive, "active": active,
+            }
+
+        # 汇总电子数（应用 overrides）
+        e_fz = e_oc = e_inact = e_act = 0
         for sym in atoms:
             fz, oc, vl = self._get_shell_tiers(sym)
-            fz, oc, vl = self._apply_overrides(sym, fz, oc, vl, overrides)
+            inactive, active = self._split_valence(sym, vl)
+            fz, oc, inactive, active = self._apply_overrides_v2(
+                sym, fz, oc, inactive, active, overrides,
+            )
             config = ELEMENTS[sym].eleconfig_dict
             for (n, letter), occ in config.items():
                 key = (n, letter.upper())
                 if key in fz:
-                    n_fz += occ
+                    e_fz += occ
                 elif key in oc:
-                    n_oc += occ
+                    e_oc += occ
+                elif key in inactive:
+                    e_inact += occ
                 else:
-                    n_vl += occ
+                    e_act += occ
 
         # 对每个 irrep 分类
+        tier_keys = ("frozen_core", "outer_core", "inactive", "active", "virtual")
         per_irrep: list[IrrepClassification] = []
         for irrep_data in sao.irreps:
-            fz_set: set[tuple] = set()
-            oc_set: set[tuple] = set()
-            vl_set: set[tuple] = set()
-            fz_labels, oc_labels, vl_labels = [], [], []
+            sets = {k: set() for k in tier_keys}
+            labels: dict[str, list[str]] = {k: [] for k in sets}
 
             for sao_line in irrep_data.saos:
                 for ao in sao_line.aos:
                     label = f"{ao.atom_index}{ao.element}{ao.n}{ao.l}{ao.m}"
+                    tiers = atom_tiers.get(ao.atom_index, {})
                     key = (ao.n, ao.l)
-                    if key in atom_frozen.get(ao.atom_index, set()):
-                        fz_labels.append(label)
-                        fz_set.add(label)
-                    elif key in atom_outer.get(ao.atom_index, set()):
-                        oc_labels.append(label)
-                        oc_set.add(label)
-                    else:
-                        vl_labels.append(label)
-                        vl_set.add(label)
+                    tier = self._lookup_tier(key, tiers)
+                    labels[tier].append(label)
+                    sets[tier].add(label)
 
             per_irrep.append(IrrepClassification(
-                irrep=irrep_data.irrep,
-                norb=irrep_data.norb,
-                frozen_core_labels=fz_labels,
-                outer_core_labels=oc_labels,
-                valence_labels=vl_labels,
-                n_frozen_core=len(fz_labels),
-                n_outer_core=len(oc_labels),
-                n_valence=len(vl_labels),
-                # 去重轨道数（每 (atom,n,l,m) 唯一）
-                n_frozen_core_orbitals=len(fz_set),
-                n_outer_core_orbitals=len(oc_set),
-                n_valence_orbitals=len(vl_set),
+                irrep=irrep_data.irrep, norb=irrep_data.norb,
+                frozen_core_labels=labels["frozen_core"],
+                outer_core_labels=labels["outer_core"],
+                inactive_labels=labels["inactive"],
+                active_labels=labels["active"],
+                virtual_labels=labels["virtual"],
+                n_frozen_core_orbitals=len(sets["frozen_core"]),
+                n_outer_core_orbitals=len(sets["outer_core"]),
+                n_inactive_orbitals=len(sets["inactive"]),
+                n_active_orbitals=len(sets["active"]),
+                n_virtual_orbitals=len(sets["virtual"]),
             ))
 
-        # 全局去重: 同标签的 AO 在对称性等价的 irreps 中可能重复出现
-        all_vl_labels = set()
+        # 全局去重（每个 irrep 的 labels 内部已去重，跨 irrep 可能有重复）
+        all_labels = {k: set() for k in tier_keys}
         for ir in per_irrep:
-            all_vl_labels.update(ir.valence_labels)
-        total_vl_orbs = len(all_vl_labels)
+            for k in all_labels:
+                all_labels[k].update(getattr(ir, f"{k}_labels"))
 
         return OrbitalClassification(
             molecule="".join(atoms),
             point_group=sao.point_group or "",
-            n_electrons=n_fz + n_oc + n_vl,
-            n_frozen_core_electrons=n_fz,
-            n_outer_core_electrons=n_oc,
-            n_valence_electrons=n_vl,
-            total_valence_orbitals=total_vl_orbs,
+            n_electrons=e_fz + e_oc + e_inact + e_act,
+            n_frozen_core_electrons=e_fz,
+            n_outer_core_electrons=e_oc,
+            n_inactive_electrons=e_inact,
+            n_active_electrons=e_act,
+            total_inactive_orbitals=len(all_labels["inactive"]),
+            total_active_orbitals=len(all_labels["active"]),
+            total_virtual_orbitals=len(all_labels["virtual"]),
+            n_basis=sao.n_basis,
             per_irrep=per_irrep,
         )
+
+    @staticmethod
+    def _split_valence(
+        symbol: str, valence: set[tuple[int, str]]
+    ) -> tuple[set[tuple[int, str]], set[tuple[int, str]]]:
+        """将 valence shells 拆分为 inactive（满占据）和 active（部分占据）。"""
+        ele = ELEMENTS[symbol]
+        config = ele.eleconfig_dict
+        inactive, active = set(), set()
+        for (n, l_letter) in valence:
+            n_letter = l_letter.upper()
+            occ = config.get((n, n_letter.lower()), 0)
+            l_val = "SPDFGHI".index(n_letter)
+            capacity = 2 * (2 * l_val + 1)
+            if occ >= capacity:
+                inactive.add((n, n_letter))
+            else:
+                active.add((n, n_letter))
+        return inactive, active
+
+    @staticmethod
+    def _lookup_tier(
+        key: tuple[int, str], tiers: dict[str, set[tuple[int, str]]]
+    ) -> str:
+        for tier in ("frozen_core", "outer_core", "inactive", "active"):
+            if key in tiers.get(tier, set()):
+                return tier
+        return "virtual"
+
+    @staticmethod
+    def _apply_overrides_v2(
+        symbol: str,
+        fz: set, oc: set, inactive: set, active: set,
+        overrides: dict[str, list[str]],
+    ) -> tuple[set, set, set, set]:
+        """应用用户覆盖到五层级。"""
+        fz, oc, inactive, active = set(fz), set(oc), set(inactive), set(active)
+        all_shells = fz | oc | inactive | active
+        valid_tiers = {"frozen_core", "outer_core", "inactive", "active"}
+
+        for tier_key, spec_list in overrides.items():
+            if tier_key not in valid_tiers:
+                continue
+            for spec in spec_list:
+                shell = _parse_override_spec(spec)
+                if shell is None:
+                    continue
+                elem, n, l = shell
+                if elem.upper() != symbol.upper():
+                    continue
+                key = (n, l.upper())
+                if key not in all_shells:
+                    continue
+                for s in (fz, oc, inactive, active):
+                    s.discard(key)
+                {"frozen_core": fz, "outer_core": oc,
+                 "inactive": inactive, "active": active}[tier_key].add(key)
+
+        return fz, oc, inactive, active
 
     @staticmethod
     def _get_shell_tiers(
