@@ -30,6 +30,7 @@ class OrbitalClassifier:
         self,
         sao: SAOParseResult,
         atoms: list[str],
+        overrides: dict[str, list[str]] | None = None,
     ) -> OrbitalClassification:
         """
         三层级分类: frozen_core / outer_core / valence，每不可约表示。
@@ -37,13 +38,26 @@ class OrbitalClassifier:
         frozen_core: 惰性气体芯中 n < max_core_n 的轨道（永不激发）
         outer_core:  惰性气体芯中 n = max_core_n 的轨道（MRCI 可激发）
         valence:     惰性气体芯之外的轨道（MCSCF/MRCI 活性空间）
+
+        overrides 允许用户调整默认分类:
+          {"frozen_core": ["U:6p", "F:2s"],  # 移入 frozen_core
+           "outer_core":  ["U:5d"],           # 移入 outer_core
+           "valence":     ["U:5d", "F:2p"]}   # 移入 valence
+
+        格式: "Element:nl" — "U:5f", "F:2p"
+        多元素同覆盖: 对每个 atom_index 匹配 element symbol 执行覆盖。
         """
+        overrides = overrides or {}
         atom_frozen: dict[int, set[tuple[int, str]]] = {}
         atom_outer:  dict[int, set[tuple[int, str]]] = {}
         atom_valence: dict[int, set[tuple[int, str]]] = {}
 
         for idx, sym in enumerate(atoms, start=1):
             fz, oc, vl = self._get_shell_tiers(sym)
+
+            # 应用用户覆盖
+            fz, oc, vl = self._apply_overrides(sym, fz, oc, vl, overrides)
+
             atom_frozen[idx] = fz
             atom_outer[idx] = oc
             atom_valence[idx] = vl
@@ -52,6 +66,7 @@ class OrbitalClassifier:
         n_fz = n_oc = n_vl = 0
         for sym in atoms:
             fz, oc, vl = self._get_shell_tiers(sym)
+            fz, oc, vl = self._apply_overrides(sym, fz, oc, vl, overrides)
             config = ELEMENTS[sym].eleconfig_dict
             for (n, letter), occ in config.items():
                 key = (n, letter.upper())
@@ -73,17 +88,16 @@ class OrbitalClassifier:
             for sao_line in irrep_data.saos:
                 for ao in sao_line.aos:
                     label = f"{ao.atom_index}{ao.element}{ao.n}{ao.l}{ao.m}"
-                    uid = (ao.atom_index, ao.n, ao.l, ao.m)
                     key = (ao.n, ao.l)
                     if key in atom_frozen.get(ao.atom_index, set()):
                         fz_labels.append(label)
-                        fz_set.add(uid)
+                        fz_set.add(label)
                     elif key in atom_outer.get(ao.atom_index, set()):
                         oc_labels.append(label)
-                        oc_set.add(uid)
+                        oc_set.add(label)
                     else:
                         vl_labels.append(label)
-                        vl_set.add(uid)
+                        vl_set.add(label)
 
             per_irrep.append(IrrepClassification(
                 irrep=irrep_data.irrep,
@@ -100,7 +114,11 @@ class OrbitalClassifier:
                 n_valence_orbitals=len(vl_set),
             ))
 
-        total_vl_orbs = sum(ir.n_valence_orbitals for ir in per_irrep)
+        # 全局去重: 同标签的 AO 在对称性等价的 irreps 中可能重复出现
+        all_vl_labels = set()
+        for ir in per_irrep:
+            all_vl_labels.update(ir.valence_labels)
+        total_vl_orbs = len(all_vl_labels)
 
         return OrbitalClassification(
             molecule="".join(atoms),
@@ -151,6 +169,57 @@ class OrbitalClassifier:
         valence = {(n, letter.upper()) for (n, letter) in all_config} - frozen_core - outer_core
 
         return frozen_core, outer_core, valence
+
+    @staticmethod
+    def _apply_overrides(
+        symbol: str,
+        fz: set[tuple[int, str]],
+        oc: set[tuple[int, str]],
+        vl: set[tuple[int, str]],
+        overrides: dict[str, list[str]],
+    ) -> tuple[set, set, set]:
+        """应用用户覆盖规则。返回修改后的 (frozen, outer, valence) 集合。
+
+        覆盖格式: "Element:nl" — "U:5f", "F:2p"
+        仅覆盖与 symbol 匹配的元素。
+        """
+        fz, oc, vl = set(fz), set(oc), set(vl)
+        all_shells = fz | oc | vl
+
+        for tier_key, spec_list in overrides.items():
+            if tier_key not in ("frozen_core", "outer_core", "valence"):
+                continue
+            for spec in spec_list:
+                shell = _parse_override_spec(spec)
+                if shell is None:
+                    continue
+                elem, n, l = shell
+                if elem.upper() != symbol.upper():
+                    continue
+                key = (n, l.upper())
+                if key not in all_shells:
+                    continue
+                # 从所有集合中移除，再添加到目标集合
+                fz.discard(key)
+                oc.discard(key)
+                vl.discard(key)
+                if tier_key == "frozen_core":
+                    fz.add(key)
+                elif tier_key == "outer_core":
+                    oc.add(key)
+                else:
+                    vl.add(key)
+
+        return fz, oc, vl
+
+
+def _parse_override_spec(spec: str) -> tuple[str, int, str] | None:
+    """解析 'U:5f' → ('U', 5, 'F')。"""
+    import re
+    m = re.match(r'^([A-Z][a-z]?):(\d+)([spdfghi])$', spec, re.IGNORECASE)
+    if not m:
+        return None
+    return m.group(1), int(m.group(2)), m.group(3)
 
 
 def _detect_effective_group(sao: SAOParseResult) -> str:
