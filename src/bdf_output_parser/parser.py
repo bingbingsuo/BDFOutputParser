@@ -197,11 +197,11 @@ class BDFOutputParser:
             if atoms:
                 return atoms
 
-        # 策略 1: Bohr (Cartcoord) — 取最后一个
+        # 策略 1: Bohr (Cartcoord) — BDF 输出格式: elem, x, y, z[, charge]
         bohr_matches = list(P.GEOMETRY_BOHR.finditer(content))
         if bohr_matches:
             section = bohr_matches[-1].group(0)
-            atoms = self._parse_coord_lines(section, "bohr")
+            atoms = self._parse_coord_lines(section, "bohr", charge_last=True)
             if atoms:
                 return atoms
 
@@ -221,8 +221,13 @@ class BDFOutputParser:
 
         return []
 
-    def _parse_coord_lines(self, section: str, units: str) -> list[Atom]:
-        """从文本区段中解析原子坐标行"""
+    def _parse_coord_lines(self, section: str, units: str,
+                           charge_last: bool = False) -> list[Atom]:
+        """从文本区段中解析原子坐标行。
+
+        charge_last: BDF 输出 Bohr 格式 (elem, x, y, z, charge)
+                     未设置时按 BDFEasyInput 格式 (elem, charge, x, y, z)
+        """
         atoms = []
         skip_words = {
             "molecular", "cartesian", "coordinates", "angstrom", "bohr",
@@ -237,23 +242,33 @@ class BDFOutputParser:
                 return True
             return elem.lower() in skip_words
 
-        # Bohr 格式: elem + charge + x + y + z（5 列，取后 3 列为坐标）
+        # 带电荷列的格式 (elem + 4 values)
         for m in P.COORD_LINE_WITH_CHARGE.finditer(section):
             elem = m.group(1).strip()
             if _is_skip(elem):
                 continue
             try:
                 if m.group(5) is not None:
-                    # 有第 5 列 → Bohr 格式: elem, charge, x, y, z
-                    atoms.append(Atom(
-                        element=elem,
-                        x=float(m.group(3)),
-                        y=float(m.group(4)),
-                        z=float(m.group(5)),
-                        units=units,
-                    ))
+                    if charge_last:
+                        # BDF 输出: elem, x, y, z, charge → 取 2,3,4
+                        atoms.append(Atom(
+                            element=elem,
+                            x=float(m.group(2)),
+                            y=float(m.group(3)),
+                            z=float(m.group(4)),
+                            units=units,
+                        ))
+                    else:
+                        # BDFEasyInput 格式: elem, charge, x, y, z → 取 3,4,5
+                        atoms.append(Atom(
+                            element=elem,
+                            x=float(m.group(3)),
+                            y=float(m.group(4)),
+                            z=float(m.group(5)),
+                            units=units,
+                        ))
                 else:
-                    # 无第 5 列 → 标准格式: elem, x, y, z
+                    # 标准格式: elem, x, y, z
                     atoms.append(Atom(
                         element=elem,
                         x=float(m.group(2)),
@@ -267,7 +282,7 @@ class BDFOutputParser:
         if atoms:
             return atoms
 
-        # 回退到 BDF 编号格式: "1  O  0.0  0.0  0.0"
+        # 回退: BDF 编号格式 "1  O  0.0  0.0  0.0"
         for m in P.COORD_LINE_NUMBERED.finditer(section):
             elem = m.group(1).strip()
             if _is_skip(elem):
@@ -301,6 +316,7 @@ class BDFOutputParser:
                 ))
             except ValueError:
                 continue
+
         return atoms
 
     # =========================================================================
