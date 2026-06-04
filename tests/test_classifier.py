@@ -42,47 +42,54 @@ class TestOrbitalClassifier:
         cls = classifier.classify(SAO_WATER_C2V, atoms=["O", "H", "H"])
 
         assert cls.n_electrons == 10
-        assert cls.n_core_electrons == 2       # O 1s²
-        assert cls.n_active_electrons == 8     # O 2s² 2p⁴ + H 1s²
+        assert cls.n_outer_core_electrons == 2  # O 1s² (He max_n=1, frozen=∅)
+        assert cls.n_valence_electrons == 8      # O 2s² 2p⁴ + H 1s²
         assert cls.point_group == "C(2V)"
 
         a1 = cls.per_irrep[0]
         assert a1.irrep == "A1"
         assert a1.norb == 4
-        assert a1.n_core == 1     # O1S0
-        assert a1.n_active == 4
+        assert a1.n_outer_core == 1     # O1S0
+        assert a1.n_valence == 4
 
         b1 = cls.per_irrep[2]
         assert b1.irrep == "B1"
-        assert b1.n_core == 0
-        assert b1.n_active == 3    # O2P1 + 2×H1S0
+        assert b1.n_outer_core == 0
+        assert b1.n_valence == 3    # O2P1 + 2×H1S0
 
         b2 = cls.per_irrep[3]
         assert b2.irrep == "B2"
-        assert b2.n_core == 0
-        assert b2.n_active == 1    # O2P-1
+        assert b2.n_outer_core == 0
+        assert b2.n_valence == 1    # O2P-1
 
-    def test_core_shells(self):
-        """验证芯层判定逻辑"""
+    def test_shell_tiers(self):
+        """验证三层级判定逻辑"""
         classifier = OrbitalClassifier()
-        core, valence = classifier._get_core_valence_shells("C")
-        assert core == {(1, "S")}                     # [He] core
-        assert valence == {(2, "S"), (2, "P")}        # 2s2 2p2
+        fz, oc, vl = classifier._get_shell_tiers("C")
+        assert fz == set()                            # He max_n=1, no n<1
+        assert oc == {(1, "S")}                       # n=1 in [He]
+        assert vl == {(2, "S"), (2, "P")}             # 2s2 2p2
 
-        core, valence = classifier._get_core_valence_shells("H")
-        assert core == set()                           # no core
-        assert valence == {(1, "S")}                   # 1s1
+        fz, oc, vl = classifier._get_shell_tiers("H")
+        assert fz == set() and oc == set()            # no core
+        assert vl == {(1, "S")}                       # 1s1
 
-        core, valence = classifier._get_core_valence_shells("Fe")
-        assert (1, "S") in core                        # [Ar] core
-        assert (3, "D") in valence                     # 3d6 active
+        fz, oc, vl = classifier._get_shell_tiers("Fe")
+        assert (1, "S") in fz                         # n<3 in [Ar]
+        assert (3, "S") in oc                         # n=3 in [Ar]
+        assert (3, "D") in vl                         # 3d6 active
+
+        fz, oc, vl = classifier._get_shell_tiers("U")
+        assert (4, "F") in fz                         # n<6 in [Rn]
+        assert (6, "S") in oc                         # n=6 in [Rn]
+        assert (5, "F") in vl                         # 5f3 valence
 
     def test_no_sao_data(self):
-        """空 SAO 数据的情况"""
+        """空 SAO 数据的情况 — 仍然能统计电子数"""
         classifier = OrbitalClassifier()
         cls = classifier.classify(
             SAOParseResult(),
             atoms=["C", "O"],
         )
-        assert cls.n_electrons > 0
+        assert cls.n_electrons == 14  # C(6) + O(8)
         assert cls.per_irrep == []

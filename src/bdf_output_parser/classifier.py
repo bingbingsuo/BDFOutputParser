@@ -32,105 +32,110 @@ class OrbitalClassifier:
         atoms: list[str],
     ) -> OrbitalClassification:
         """
-        分类每个不可约表示中的芯层和活性轨道。
+        三层级分类: frozen_core / outer_core / valence，每不可约表示。
 
-        Args:
-            sao: checksymm 输出的 SAO 解析结果
-            atoms: 分子中各原子的元素符号列表 ["O", "H", "H"]
-
-        Returns:
-            OrbitalClassification，含每 irrep 的 core/active 轨道数
+        frozen_core: 惰性气体芯中 n < max_core_n 的轨道（永不激发）
+        outer_core:  惰性气体芯中 n = max_core_n 的轨道（MRCI 可激发）
+        valence:     惰性气体芯之外的轨道（MCSCF/MRCI 活性空间）
         """
-        # Step 1: 构建每个原子的 core/valence (n, l) 集合
-        atom_core: dict[int, set[tuple[int, str]]] = {}    # atom_idx → {(n, L), ...}
-        atom_valence: dict[int, set[tuple[int, str]]] = {}  # atom_idx → {(n, L), ...}
+        atom_frozen: dict[int, set[tuple[int, str]]] = {}
+        atom_outer:  dict[int, set[tuple[int, str]]] = {}
+        atom_valence: dict[int, set[tuple[int, str]]] = {}
 
         for idx, sym in enumerate(atoms, start=1):
-            core, valence = self._get_core_valence_shells(sym)
-            atom_core[idx] = core
-            atom_valence[idx] = valence
+            fz, oc, vl = self._get_shell_tiers(sym)
+            atom_frozen[idx] = fz
+            atom_outer[idx] = oc
+            atom_valence[idx] = vl
 
-        # Step 2: 汇总电子数
-        n_core_e = 0
-        n_active_e = 0
+        # 汇总电子数
+        n_fz = n_oc = n_vl = 0
         for sym in atoms:
-            ele = ELEMENTS[sym]
-            core_shells, _ = self._get_core_valence_shells(sym)
-            config = ele.eleconfig_dict
+            fz, oc, vl = self._get_shell_tiers(sym)
+            config = ELEMENTS[sym].eleconfig_dict
             for (n, letter), occ in config.items():
-                l_letter = letter.upper()
-                if (n, l_letter) in core_shells:
-                    n_core_e += occ
+                key = (n, letter.upper())
+                if key in fz:
+                    n_fz += occ
+                elif key in oc:
+                    n_oc += occ
                 else:
-                    n_active_e += occ
+                    n_vl += occ
 
-        # Step 3: 对每个 irrep 分类 SAO
+        # 对每个 irrep 分类
         per_irrep: list[IrrepClassification] = []
         for irrep_data in sao.irreps:
-            core_labels: list[str] = []
-            active_labels: list[str] = []
-
+            fz_labels, oc_labels, vl_labels = [], [], []
             for sao_line in irrep_data.saos:
                 for ao in sao_line.aos:
                     label = f"{ao.atom_index}{ao.element}{ao.n}{ao.l}{ao.m}"
-                    core_shells = atom_core.get(ao.atom_index, set())
-                    if (ao.n, ao.l) in core_shells:
-                        core_labels.append(label)
+                    key = (ao.n, ao.l)
+                    if key in atom_frozen.get(ao.atom_index, set()):
+                        fz_labels.append(label)
+                    elif key in atom_outer.get(ao.atom_index, set()):
+                        oc_labels.append(label)
                     else:
-                        active_labels.append(label)
+                        vl_labels.append(label)
 
             per_irrep.append(IrrepClassification(
                 irrep=irrep_data.irrep,
                 norb=irrep_data.norb,
-                core_ao_labels=core_labels,
-                active_ao_labels=active_labels,
-                n_core=len(core_labels),
-                n_active=len(active_labels),
+                frozen_core_labels=fz_labels,
+                outer_core_labels=oc_labels,
+                valence_labels=vl_labels,
+                n_frozen_core=len(fz_labels),
+                n_outer_core=len(oc_labels),
+                n_valence=len(vl_labels),
             ))
 
         return OrbitalClassification(
             molecule="".join(atoms),
             point_group=sao.point_group or "",
-            n_electrons=n_core_e + n_active_e,
-            n_core_electrons=n_core_e,
-            n_active_electrons=n_active_e,
+            n_electrons=n_fz + n_oc + n_vl,
+            n_frozen_core_electrons=n_fz,
+            n_outer_core_electrons=n_oc,
+            n_valence_electrons=n_vl,
             per_irrep=per_irrep,
         )
 
     @staticmethod
-    def _get_core_valence_shells(
+    def _get_shell_tiers(
         symbol: str,
-    ) -> tuple[set[tuple[int, str]], set[tuple[int, str]]]:
-        """返回原子的 (core_shells, valence_shells)。
+    ) -> tuple[set[tuple[int, str]], set[tuple[int, str]], set[tuple[int, str]]]:
+        """返回 (frozen_core, outer_core, valence) 三层级壳层集合。
 
-        core_shells: 惰性气体芯对应的 (n, L_letter) 集合
-        valence_shells: 芯层之外所有占据的 (n, L_letter) 集合
+        frozen_core: noble gas core 中 n < max_core_n（深芯，永不激发）
+        outer_core:  noble gas core 中 n = max_core_n（MRCI 可激发）
+        valence:     noble gas core 之外（MCSCF/MRCI 活性）
 
-        Example:
-            O: [He] 2s2 2p4 → core={(1,'S')}, valence={(2,'S'), (2,'P')}
+        U: [Rn] 5f3 6d 7s2
+           Rn max_n=6 → frozen={n≤5}, outer={n=6}, valence={5f,6d,7s}
+        O: [He] 2s2 2p4
+           He max_n=1 → frozen={1s}, outer={}, valence={2s,2p}
+        H: 1s1 → frozen={}, outer={}, valence={1s}
         """
         ele = ELEMENTS[symbol]
-        config = ele.eleconfig  # e.g. "[He] 2s2 2p4"
-
-        # 找到惰性气体芯
+        config = ele.eleconfig
+        max_core_n = 0
         core_config: dict[tuple[int, str], int] = {}
+
         if config.startswith("["):
             bracket_end = config.index("]")
             noble_gas = config[1:bracket_end]
             if noble_gas in ELEMENTS:
                 core_config = dict(ELEMENTS[noble_gas].eleconfig_dict)
+                if core_config:
+                    max_core_n = max(n for (n, _) in core_config)
 
-        # 芯层 (n, L_letter) 集合
-        core_shells = {(n, letter.upper()) for (n, letter) in core_config}
+        frozen_core = {(n, letter.upper()) for (n, letter) in core_config
+                       if n < max_core_n}
+        outer_core = {(n, letter.upper()) for (n, letter) in core_config
+                      if n == max_core_n}
 
-        # 所有占据的 (n, L_letter) 集合
         all_config = ele.eleconfig_dict
-        all_shells = {(n, letter.upper()) for (n, letter) in all_config}
+        valence = {(n, letter.upper()) for (n, letter) in all_config} - frozen_core - outer_core
 
-        # 价层 = 所有占据 - 芯层
-        valence_shells = all_shells - core_shells
-
-        return core_shells, valence_shells
+        return frozen_core, outer_core, valence
 
 
 def _detect_effective_group(sao: SAOParseResult) -> str:
