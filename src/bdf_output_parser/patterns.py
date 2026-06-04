@@ -252,3 +252,47 @@ ERROR_PATTERNS: list[re.Pattern] = [
 TASK_TYPE_OPT = re.compile(r'Geometry\s+Optimization\s+step|BDFOPT', re.IGNORECASE)
 TASK_TYPE_FREQ = re.compile(r'Results\s+of\s+vibrations', re.IGNORECASE)
 TASK_TYPE_TDDFT = re.compile(r'TDDFT|TDDFT-SOC|Spin\s+change', re.IGNORECASE)
+
+# =============================================================================
+# SAO — Symmetry Adapted Orbital section
+# =============================================================================
+
+# Irrep header: "    Irrep A1         1    norb=   4"
+SAO_IRREP_HEADER = re.compile(
+    r'Irrep\s+(\S+)\s+(\d+)\s+norb\s*=\s*(\d+)'
+)
+
+# SAO label line: "  A1|1C1     1O2S0    1O2P1"
+SAO_LABEL_LINE = re.compile(
+    r'^\s*([A-Z]\d)\|(\d+)C(\d+)\s+(.+)$'
+)
+
+# Individual AO label: "1O2P1" or "1O2S0"
+SAO_AO_LABEL = re.compile(
+    r'(\d+)([A-Z][a-z]?)(\d+)([SPDFGHI])(-?\d+)'
+)
+
+# Coefficient line: "            1.0000" or "            0.7071   0.7071"
+SAO_COEFF_LINE = re.compile(
+    r'^\s*([-+]?\d+\.\d+(?:\s+[-+]?\d+\.\d+)*)\s*$'
+)
+
+# Summary: "  Irrep :   A1        A2        B1        B2"
+SAO_IRREP_NAMES = re.compile(
+    r'Irrep\s*:\s*(.*)'
+)
+
+# Summary: "  Norb  :      4         0         2         1"
+SAO_NORB_COUNTS = re.compile(
+    r'Norb\s*:\s*(.*)'
+)
+
+# Point group: "  Point group name C(2V)"
+SAO_POINT_GROUP = re.compile(
+    r'Point\s+group\s+name\s+(\S+)', re.IGNORECASE
+)
+
+# Total basis: "  Total number of basis functions:       7       7"
+SAO_NBASIS = re.compile(
+    r'Total\s+number\s+of\s+basis\s+functions:\s+(\d+)', re.IGNORECASE
+)

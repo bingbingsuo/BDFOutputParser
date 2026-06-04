@@ -12,14 +12,18 @@ from pathlib import Path
 from typing import Optional
 
 from .models import (
+    AOLabel,
     Atom,
     BDFParseResult,
     EnergyData,
     ExcitedState,
     FrequencyData,
     GeometryData,
+    IrrepSAO,
     OptimizationData,
     ParseStatus,
+    SAOLine,
+    SAOParseResult,
     SCFData,
     TaskType,
     TDDFTBlock,
@@ -607,3 +611,128 @@ class BDFOutputParser:
             except (ValueError, IndexError):
                 pass
         return None
+
+    # =========================================================================
+    # SAO — Symmetry Adapted Orbital 解析 (checksymm / COMPASS+godetail)
+    # =========================================================================
+
+    def parse_sao(self, content: str) -> SAOParseResult:
+        """解析 checksymm 输出的 SAO 区块。
+
+        从 COMPASS+godetail 输出中提取：
+        - 点群名称
+        - 每个不可约表示的轨道数和 SAO 组成
+        - 每个 SAO 的 AO 组合与系数
+        """
+        pg = None
+        pg_m = P.SAO_POINT_GROUP.search(content)
+        if pg_m:
+            pg = pg_m.group(1)
+
+        n_basis = 0
+        basis_m = P.SAO_NBASIS.search(content)
+        if basis_m:
+            n_basis = int(basis_m.group(1))
+
+        # 找到 SAO 区段的起止位置
+        sao_start = content.find("Symmetry adapted orbital")
+        if sao_start == -1:
+            return SAOParseResult(point_group=pg, n_basis=n_basis)
+
+        # 找到 Irrep summary 行作为结尾
+        irrep_summary_m = P.SAO_IRREP_NAMES.search(content, sao_start)
+        sao_end = irrep_summary_m.start() if irrep_summary_m else len(content)
+
+        section = content[sao_start:sao_end]
+
+        # 解析每个 irrep 的 SAO
+        irreps: list[IrrepSAO] = []
+        irrep_headers = list(P.SAO_IRREP_HEADER.finditer(section))
+
+        for idx, (hdr, next_hdr) in enumerate(zip(irrep_headers, irrep_headers[1:] + [None])):
+            irrep_name = hdr.group(1)
+            irrep_index = int(hdr.group(2))
+            norb = int(hdr.group(3))
+
+            hdr_start = hdr.end()
+            hdr_end = next_hdr.start() if next_hdr else len(section)
+            irrep_block = section[hdr_start:hdr_end]
+
+            saos = self._parse_sao_lines(irrep_block, irrep_name, irrep_index)
+
+            irreps.append(IrrepSAO(
+                irrep=irrep_name,
+                irrep_index=irrep_index,
+                norb=norb,
+                saos=saos,
+            ))
+
+        return SAOParseResult(
+            point_group=pg,
+            n_irreps=len(irreps),
+            n_basis=n_basis,
+            irreps=irreps,
+        )
+
+    def _parse_sao_lines(self, block: str, irrep: str, irrep_index: int) -> list[SAOLine]:
+        """解析一个 irrep 区块内的 SAO 行"""
+        saos: list[SAOLine] = []
+        lines = block.splitlines()
+
+        i = 0
+        while i < len(lines):
+            sao_label_m = P.SAO_LABEL_LINE.search(lines[i])
+            if not sao_label_m:
+                i += 1
+                continue
+
+            sao_label = sao_label_m.group(0).strip().split()[0]  # "A1|1C1"
+            sao_idx = int(sao_label_m.group(2))
+            comp = int(sao_label_m.group(3))
+
+            # 解析 AO 标签（在当前行和后续行都可能出现）
+            ao_raw = sao_label_m.group(4).strip()
+            ao_labels = self._parse_ao_labels(ao_raw)
+
+            # 下一行是系数
+            i += 1
+            coeffs = []
+            if i < len(lines):
+                coeff_m = P.SAO_COEFF_LINE.search(lines[i])
+                if coeff_m:
+                    coeffs = [float(v) for v in coeff_m.group(1).split()]
+
+            # 将系数绑定到各 AO
+            for j, aol in enumerate(ao_labels):
+                if j < len(coeffs):
+                    aol.coeff = coeffs[j]
+
+            saos.append(SAOLine(
+                label=sao_label,
+                irrep=irrep,
+                irrep_index=irrep_index,
+                component=comp,
+                aos=ao_labels,
+            ))
+
+            i += 1
+
+        return saos
+
+    @staticmethod
+    def _parse_ao_labels(ao_text: str) -> list[AOLabel]:
+        """解析一行中所有 AO 标签: '1O1S0    1O2S0'"""
+        labels: list[AOLabel] = []
+        for m in P.SAO_AO_LABEL.finditer(ao_text):
+            try:
+                labels.append(AOLabel(
+                    atom_index=int(m.group(1)),
+                    element=m.group(2),
+                    n=int(m.group(3)),
+                    l=m.group(4),
+                    m=int(m.group(5)),
+                    coeff=0.0,  # 后续由系数行更新
+                ))
+            except (ValueError, IndexError):
+                continue
+        return labels

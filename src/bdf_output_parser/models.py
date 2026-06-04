@@ -197,3 +197,66 @@ class BDFParseResult(BaseModel):
     def excited_states(self) -> list[ExcitedState]:
         """展平所有 TDDFT 块（向后兼容）"""
         return [s for blk in self.tddft_blocks for s in blk.states]
+
+
+# =============================================================================
+# SAO — Symmetry Adapted Orbital (checksymm COMPASS output)
+# =============================================================================
+
+class AOLabel(BaseModel):
+    """单个 AO 标签: "1O2P1" → atom=1, element=O, n=2, l=P, m=1"""
+    atom_index: int
+    element: str
+    n: int                          # 主量子数
+    l: str                          # 角量子数字母: S/P/D/F
+    m: int                          # 磁量子数
+    coeff: float                    # 在 SAO 中的系数
+
+
+class SAOLine(BaseModel):
+    """单个 symmetry-adapted orbital 的 AO 组成"""
+    label: str                      # "A1|1C1"
+    irrep: str                      # "A1"
+    irrep_index: int                # 1-based
+    component: int                  # 简并分量 (1 or 2 for degenerate irreps)
+    aos: list[AOLabel] = []
+
+
+class IrrepSAO(BaseModel):
+    """一个不可约表示中所有 SAO 的信息"""
+    irrep: str                      # "A1"
+    irrep_index: int                # 1
+    norb: int                       # 该 irrep 的轨道数
+    saos: list[SAOLine] = []
+
+
+class SAOParseResult(BaseModel):
+    """checksymm COMPASS 输出中 SAO 区块的解析结果"""
+    point_group: Optional[str] = None
+    n_irreps: int = 0
+    n_basis: int = 0
+    irreps: list[IrrepSAO] = []
+
+
+# =============================================================================
+# Orbital Classification
+# =============================================================================
+
+class IrrepClassification(BaseModel):
+    """单个不可约表示中的 core/active 轨道分类"""
+    irrep: str                      # "A1"
+    norb: int                       # 总轨道数
+    core_ao_labels: list[str] = []  # 芯层 AO 标签
+    active_ao_labels: list[str] = [] # 价层 AO 标签
+    n_core: int = 0
+    n_active: int = 0
+
+
+class OrbitalClassification(BaseModel):
+    """分子轨道分类结果 — core vs valence per irrep"""
+    molecule: str = ""
+    point_group: str = ""
+    n_electrons: int = 0
+    n_core_electrons: int = 0
+    n_active_electrons: int = 0
+    per_irrep: list[IrrepClassification] = []

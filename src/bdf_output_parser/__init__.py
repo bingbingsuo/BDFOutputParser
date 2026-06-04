@@ -8,9 +8,16 @@ BDFOutputParser — 统一 BDF 量子化学输出解析库
 
 from .parser import BDFOutputParser
 from .reporters.markdown import MarkdownReporter
+from .classifier import OrbitalClassifier
 from .models import (
+    AOLabel,
     BDFParseResult,
+    IrrepClassification,
+    IrrepSAO,
+    OrbitalClassification,
     ParseStatus,
+    SAOLine,
+    SAOParseResult,
     TaskType,
     Atom,
     EnergyData,
@@ -25,7 +32,14 @@ from .models import (
 __all__ = [
     "BDFOutputParser",
     "MarkdownReporter",
+    "OrbitalClassifier",
+    "AOLabel",
     "BDFParseResult",
+    "IrrepClassification",
+    "IrrepSAO",
+    "OrbitalClassification",
+    "SAOLine",
+    "SAOParseResult",
     "ParseStatus",
     "TaskType",
     "Atom",
