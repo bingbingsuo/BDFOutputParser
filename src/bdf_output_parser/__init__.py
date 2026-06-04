@@ -8,7 +8,8 @@ BDFOutputParser — 统一 BDF 量子化学输出解析库
 
 from .parser import BDFOutputParser
 from .reporters.markdown import MarkdownReporter
-from .classifier import OrbitalClassifier
+from .classifier import OrbitalClassifier, classify_with_symmetry
+from .symmetry import is_abelian, recommend_subgroup
 from .models import (
     AOLabel,
     BDFParseResult,
@@ -33,6 +34,9 @@ __all__ = [
     "BDFOutputParser",
     "MarkdownReporter",
     "OrbitalClassifier",
+    "classify_with_symmetry",
+    "is_abelian",
+    "recommend_subgroup",
     "AOLabel",
     "BDFParseResult",
     "IrrepClassification",

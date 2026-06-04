@@ -131,3 +131,114 @@ class OrbitalClassifier:
         valence_shells = all_shells - core_shells
 
         return core_shells, valence_shells
+
+
+def _detect_effective_group(sao: SAOParseResult) -> str:
+    """从 SAO irreps 反推有效阿贝尔点群（不依赖输出中印的 Point group name 文本）。
+
+    当用户指定 `group D2h` 后，BDF 以 D2h 分解 SAO，但输出仍打印全对称性。
+    此函数检查 irrep 名称判断实际使用的点群。
+    """
+    if not sao.irreps:
+        return (sao.point_group or "").upper()
+
+    irrep_names = {ir.irrep.upper() for ir in sao.irreps if ir.irrep}
+    # 去除空 irrep (norb=0) 和可能的空白
+
+    # D2h irreps: Ag, B1g, B2g, B3g, Au, B1u, B2u, B3u
+    d2h_set = {"AG", "B1G", "B2G", "B3G", "AU", "B1U", "B2U", "B3U"}
+    if irrep_names.issubset(d2h_set):
+        return "D2H"
+
+    # D2 irreps: A, B1, B2, B3
+    d2_set = {"A", "B1", "B2", "B3"}
+    if irrep_names.issubset(d2_set):
+        return "D2"
+
+    # C2v irreps: A1, A2, B1, B2
+    c2v_set = {"A1", "A2", "B1", "B2"}
+    if irrep_names.issubset(c2v_set):
+        return "C2V"
+
+    # C2h irreps: Ag, Bg, Au, Bu
+    c2h_set = {"AG", "BG", "AU", "BU"}
+    if irrep_names.issubset(c2h_set):
+        return "C2H"
+
+    # Cs irreps: A', A"
+    cs_set = {"A'", "A''", "A\'", "A\'\'"}
+    if irrep_names.issubset(cs_set):
+        return "CS"
+
+    # C2 irreps: A, B
+    c2_set = {"A", "B"}
+    if irrep_names.issubset(c2_set):
+        return "C2"
+
+    # C1: just A
+    if irrep_names == {"A"} or irrep_names == {"AG"}:
+        return "C1"
+
+    # Fallback: use printed point group
+    return (sao.point_group or "").upper()
+
+
+def classify_with_symmetry(
+    sao: SAOParseResult,
+    atoms: list[str],
+) -> dict:
+    """
+    完整的对称性感知分类流程。
+
+    返回 dict:
+      abelian: bool — 有效点群是否为阿贝尔群
+      point_group: str — 原始打印的点群
+      effective_group: str — 从 irrep 反推的有效点群
+      subgroup: str | None — 若非阿贝尔群，推荐的最大阿贝尔子群
+      message: str — 给用户的建议
+      classification: OrbitalClassification | None — 若是阿贝尔群，直接分类
+    """
+    from .symmetry import is_abelian, recommend_subgroup
+
+    classifier = OrbitalClassifier()
+    pg_print = (sao.point_group or "").upper()
+    pg_effective = _detect_effective_group(sao)
+
+    if not pg_effective:
+        return {
+            "abelian": True,
+            "point_group": pg_print,
+            "effective_group": "",
+            "subgroup": None,
+            "message": "未检测到分子对称性。",
+            "classification": classifier.classify(sao, atoms),
+        }
+
+    if is_abelian(pg_effective):
+        return {
+            "abelian": True,
+            "point_group": pg_print,
+            "effective_group": pg_effective,
+            "subgroup": None,
+            "message": f"有效点群 {pg_effective} 为阿贝尔群，MCSCF/MRCI 可直接使用。",
+            "classification": classifier.classify(sao, atoms),
+        }
+
+    subgroup = recommend_subgroup(pg_effective)
+    if subgroup:
+        msg = (
+            f"点群 {pg_effective} 为非阿贝尔群，BDF 多组态方法不支持。"
+            f"建议使用最大阿贝尔子群 {subgroup}。"
+            f"请重新执行 checksymm 并设置 group {subgroup}。"
+        )
+    else:
+        msg = f"点群 {pg_effective} 为非阿贝尔群，且未找到推荐的阿贝尔子群。建议手动指定 D2h 或更低对称性。"
+
+    return {
+        "abelian": False,
+        "point_group": pg_print,
+        "effective_group": pg_effective,
+        "subgroup": subgroup,
+        "message": msg,
+        "classification": None,
+    }
