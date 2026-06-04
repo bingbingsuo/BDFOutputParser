@@ -1,0 +1,8 @@
+Metadata-Version: 2.4
+Name: bdf-output-parser
+Version: 0.1.0
+Summary: Unified BDF quantum chemistry output parser — structured JSON + Markdown reports
+Requires-Python: >=3.10
+Requires-Dist: pydantic>=2.0
+Provides-Extra: dev
+Requires-Dist: pytest>=7.0; extra == "dev"
