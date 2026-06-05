@@ -231,6 +231,12 @@ THERMO_E_THERMAL = re.compile(rf'Electronic\s+\+\s+Thermal\s*=\s*({_FLOAT})', re
 THERMO_E_ENTHALPY = re.compile(rf'Electronic\s+\+\s+Enthalpy\s*=\s*({_FLOAT})', re.IGNORECASE)
 THERMO_E_GIBBS = re.compile(rf'Electronic\s+\+\s+Gibbs\s*=\s*({_FLOAT})', re.IGNORECASE)
 
+# Alternative TDDFT format: "No.     1    w=      9.8445 eV"
+TDDFT_ALT_LINE = re.compile(
+    r'No\.\s+(\d+)\s+w=\s+([-\d.]+)\s+eV\s+.*?f=\s+([-\d.]+)',
+    re.IGNORECASE,
+)
+
 # =============================================================================
 # Warnings / Errors
 # =============================================================================

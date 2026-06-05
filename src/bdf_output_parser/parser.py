@@ -392,6 +392,11 @@ class BDFOutputParser:
     # =========================================================================
 
     def _extract_tddft(self, content: str) -> list[TDDFTBlock]:
+        # 备选格式优先: "No.  1   w=  9.8445 eV ... f=  0.0906"
+        alt_states = self._parse_tddft_alt_format(content)
+        if alt_states:
+            return [TDDFTBlock(states=alt_states)]
+
         spin_matches = list(P.TDDFT_SPIN_CHANGE.finditer(content))
         if not spin_matches:
             # fallback: 检查是否有 TDDFT header
@@ -427,6 +432,8 @@ class BDFOutputParser:
         states: list[ExcitedState] = []
         header_m = P.TDDFT_HEADER.search(block)
         if not header_m:
+            # 尝试备选格式: "No.  1   w=  9.8445 eV  ...  f=  0.0906"
+            states = self._parse_tddft_alt_format(block)
             return states
 
         lines = block[header_m.end():].splitlines()
@@ -462,6 +469,26 @@ class BDFOutputParser:
             except (ValueError, IndexError):
                 continue
 
+        return states
+
+    @staticmethod
+    def _parse_tddft_alt_format(block: str) -> list[ExcitedState]:
+        """备选 TDDFT 格式: 'No.  1   w=  9.8445 eV  ...  f=  0.0906'"""
+        states: list[ExcitedState] = []
+        for m in P.TDDFT_ALT_LINE.finditer(block):
+            try:
+                idx = int(m.group(1))
+                energy_ev = float(m.group(2))
+                osc = float(m.group(3))
+                wavelength_nm = 1239.84193 / energy_ev if energy_ev > 0 else 0.0
+                states.append(ExcitedState(
+                    index=idx,
+                    energy_ev=energy_ev,
+                    wavelength_nm=round(wavelength_nm, 2),
+                    oscillator_strength=osc,
+                ))
+            except (ValueError, IndexError):
+                continue
         return states
 
     # =========================================================================
