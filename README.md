@@ -2,6 +2,8 @@
 
 统一 BDF 量子化学输出解析库，供 BDFAssistant、BDFExecute 等共享使用。
 
+**仓库**: [github.com/bingbingsuo/BDFOutputParser](https://github.com/bingbingsuo/BDFOutputParser)
+
 合并 BDFAssistant、BDFExecute、BDFEasyInput 三套解析器的最优正则和提取逻辑。
 
 ## 安装
