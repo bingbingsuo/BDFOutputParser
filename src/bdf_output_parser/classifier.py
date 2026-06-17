@@ -93,34 +93,50 @@ class OrbitalClassifier:
                 else:
                     e_act += occ
 
-        # 对每个 irrep 分类
+        # 对每个 irrep，按 SAO（分子轨道）分类
+        # 每个 SAO 取其主导 AO 所在的 tier，优先级: active > inactive > outer > frozen > virtual
+        _TIER_PRIORITY = {"active": 0, "inactive": 1, "outer_core": 2, "frozen_core": 3, "virtual": 4}
         tier_keys = ("frozen_core", "outer_core", "inactive", "active", "virtual")
         per_irrep: list[IrrepClassification] = []
         for irrep_data in sao.irreps:
-            sets = {k: set() for k in tier_keys}
-            labels: dict[str, list[str]] = {k: [] for k in sets}
+            sao_tiers: dict[str, list[int]] = {k: [] for k in tier_keys}
+            all_ao_labels: dict[str, set[str]] = {k: set() for k in tier_keys}
+            sao_labels: dict[str, list[str]] = {k: [] for k in tier_keys}
 
-            for sao_line in irrep_data.saos:
+            for idx, sao_line in enumerate(irrep_data.saos):
+                # 找出此 SAO 中主导 AO 所在的 tier
+                best_tier = "virtual"
+                best_prio = _TIER_PRIORITY["virtual"]
+                ao_info: list[tuple[str, str]] = []
                 for ao in sao_line.aos:
                     label = f"{ao.atom_index}{ao.element}{ao.n}{ao.l}{ao.m}"
                     tiers = atom_tiers.get(ao.atom_index, {})
                     key = (ao.n, ao.l)
                     tier = self._lookup_tier(key, tiers)
-                    labels[tier].append(label)
-                    sets[tier].add(label)
+                    ao_info.append((label, tier))
+                    all_ao_labels[tier].add(label)
+                    prio = _TIER_PRIORITY.get(tier, 4)
+                    if prio < best_prio:
+                        best_prio = prio
+                        best_tier = tier
+
+                # 将 SAO 计为主导 tier 的分子轨道
+                sao_tiers[best_tier].append(idx)
+                for label, tier in ao_info:
+                    sao_labels[tier].append(label)
 
             per_irrep.append(IrrepClassification(
                 irrep=irrep_data.irrep, norb=irrep_data.norb,
-                frozen_core_labels=labels["frozen_core"],
-                outer_core_labels=labels["outer_core"],
-                inactive_labels=labels["inactive"],
-                active_labels=labels["active"],
-                virtual_labels=labels["virtual"],
-                n_frozen_core_orbitals=len(sets["frozen_core"]),
-                n_outer_core_orbitals=len(sets["outer_core"]),
-                n_inactive_orbitals=len(sets["inactive"]),
-                n_active_orbitals=len(sets["active"]),
-                n_virtual_orbitals=len(sets["virtual"]),
+                frozen_core_labels=sao_labels["frozen_core"],
+                outer_core_labels=sao_labels["outer_core"],
+                inactive_labels=sao_labels["inactive"],
+                active_labels=sao_labels["active"],
+                virtual_labels=sao_labels["virtual"],
+                n_frozen_core_orbitals=len(sao_tiers["frozen_core"]),
+                n_outer_core_orbitals=len(sao_tiers["outer_core"]),
+                n_inactive_orbitals=len(sao_tiers["inactive"]),
+                n_active_orbitals=len(sao_tiers["active"]),
+                n_virtual_orbitals=len(sao_tiers["virtual"]),
             ))
 
         # 全局去重（每个 irrep 的 labels 内部已去重，跨 irrep 可能有重复）
