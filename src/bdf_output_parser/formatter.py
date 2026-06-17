@@ -104,10 +104,10 @@ def _sao_label(sline: Any) -> str:
         has_same_elem_multi = True
 
     if has_same_elem_multi:
-        # 同元素多中心：包含原子序号区分 → F2_2p1+F3_2p1
+        # 同元素多中心：F2s0+F2s0（不区原子序号，对称等价）
         parts = []
         for ao in sline.aos:
-            parts.append(f"{ao.element}{ao.atom_index}_{ao.n}{ao.l.lower()}{ao.m}")
+            parts.append(f"{ao.element}{ao.n}{ao.l.lower()}{ao.m}")
         return "+".join(parts)
     else:
         # 单中心或其他情况
