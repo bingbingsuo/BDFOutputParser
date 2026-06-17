@@ -251,11 +251,13 @@ class IrrepClassification(BaseModel):
     inactive_labels: list[str] = []      # inactive（满占据 valence shell）
     active_labels: list[str] = []        # active（部分占据 valence shell）
     virtual_labels: list[str] = []       # virtual（未占据基函数）
-    n_frozen_core_orbitals: int = 0     # 去重轨道数
+    n_frozen_core_orbitals: int = 0     # SAO 数
     n_outer_core_orbitals: int = 0
     n_inactive_orbitals: int = 0
     n_active_orbitals: int = 0
     n_virtual_orbitals: int = 0
+    # 每 tier 的原子壳层组成摘要: {"frozen_core": {"U": "5s,5p,5d", "F": "1s"}, ...}
+    summary: dict[str, dict[str, str]] = {}
 
 
 class OrbitalClassification(BaseModel):
@@ -272,3 +274,5 @@ class OrbitalClassification(BaseModel):
     total_virtual_orbitals: int = 0
     n_basis: int = 0                    # 总基函数数
     per_irrep: list[IrrepClassification] = []
+    # 全局 summary: 跨 irrep 合并的原子壳层组成
+    summary: dict[str, dict[str, str]] = {}

@@ -61,8 +61,9 @@ class OrbitalClassifier:
         for idx, sym in enumerate(atoms, start=1):
             fz, oc, vl = self._get_shell_tiers(sym)
 
-            # 将 valence 拆分为 inactive (满占据) 和 active (部分占据)
-            inactive, active = self._split_valence(sym, vl)
+            # 周期表价轨道全部归入 active（不按占据数拆分）
+            active = vl
+            inactive: set[tuple[int, str]] = set()
 
             fz, oc, inactive, active = self._apply_overrides_v2(
                 sym, fz, oc, inactive, active, overrides,
@@ -73,11 +74,12 @@ class OrbitalClassifier:
                 "inactive": inactive, "active": active,
             }
 
-        # 汇总电子数（应用 overrides）
+        # 汇总电子数
         e_fz = e_oc = e_inact = e_act = 0
         for sym in atoms:
             fz, oc, vl = self._get_shell_tiers(sym)
-            inactive, active = self._split_valence(sym, vl)
+            active = vl
+            inactive = set()
             fz, oc, inactive, active = self._apply_overrides_v2(
                 sym, fz, oc, inactive, active, overrides,
             )
@@ -90,7 +92,7 @@ class OrbitalClassifier:
                     e_oc += occ
                 elif key in inactive:
                     e_inact += occ
-                else:
+                elif key in active:
                     e_act += occ
 
         # 对每个 irrep，按 SAO（分子轨道）分类
@@ -98,10 +100,13 @@ class OrbitalClassifier:
         _TIER_PRIORITY = {"active": 0, "inactive": 1, "outer_core": 2, "frozen_core": 3, "virtual": 4}
         tier_keys = ("frozen_core", "outer_core", "inactive", "active", "virtual")
         per_irrep: list[IrrepClassification] = []
+        global_shell_sets: dict[str, dict[str, set[str]]] = {k: {} for k in tier_keys}
+
         for irrep_data in sao.irreps:
             sao_tiers: dict[str, list[int]] = {k: [] for k in tier_keys}
             all_ao_labels: dict[str, set[str]] = {k: set() for k in tier_keys}
             sao_labels: dict[str, list[str]] = {k: [] for k in tier_keys}
+            irrep_shell_sets: dict[str, dict[str, set[str]]] = {k: {} for k in tier_keys}
 
             for idx, sao_line in enumerate(irrep_data.saos):
                 # 找出此 SAO 中主导 AO 所在的 tier
@@ -125,6 +130,9 @@ class OrbitalClassifier:
                 for label, tier in ao_info:
                     sao_labels[tier].append(label)
 
+            irrep_summary = _build_shell_summary(sao_labels, atoms)
+            global_shell_sets = _merge_shell_sets(global_shell_sets, irrep_shell_sets, sao_labels, atoms)
+
             per_irrep.append(IrrepClassification(
                 irrep=irrep_data.irrep, norb=irrep_data.norb,
                 frozen_core_labels=sao_labels["frozen_core"],
@@ -137,15 +145,24 @@ class OrbitalClassifier:
                 n_inactive_orbitals=len(sao_tiers["inactive"]),
                 n_active_orbitals=len(sao_tiers["active"]),
                 n_virtual_orbitals=len(sao_tiers["virtual"]),
+                summary=irrep_summary,
             ))
 
-        # 全局去重（每个 irrep 的 labels 内部已去重，跨 irrep 可能有重复）
-        all_labels = {k: set() for k in tier_keys}
-        for ir in per_irrep:
-            for k in all_labels:
-                all_labels[k].update(getattr(ir, f"{k}_labels"))
+        # 全局去重 shell summary
+        global_summary: dict[str, dict[str, str]] = {}
+        for tier in tier_keys:
+            global_summary[tier] = {}
+            for elem in sorted(global_shell_sets.get(tier, {})):
+                shells = sorted(global_shell_sets[tier][elem], key=_shell_sort_key)
+                global_summary[tier][elem] = _format_shell_list(shells)
+
+        # 全局汇总（跨 irrep 去重 SAO 计数）
+        total_inact = sum(ir.n_inactive_orbitals for ir in per_irrep)
+        total_act = sum(ir.n_active_orbitals for ir in per_irrep)
+        total_virt = sum(ir.n_virtual_orbitals for ir in per_irrep)
 
         return OrbitalClassification(
+            summary=global_summary,
             molecule="".join(atoms),
             point_group=sao.point_group or "",
             n_electrons=e_fz + e_oc + e_inact + e_act,
@@ -153,9 +170,9 @@ class OrbitalClassifier:
             n_outer_core_electrons=e_oc,
             n_inactive_electrons=e_inact,
             n_active_electrons=e_act,
-            total_inactive_orbitals=len(all_labels["inactive"]),
-            total_active_orbitals=len(all_labels["active"]),
-            total_virtual_orbitals=len(all_labels["virtual"]),
+            total_inactive_orbitals=total_inact,
+            total_active_orbitals=total_act,
+            total_virtual_orbitals=total_virt,
             n_basis=sao.n_basis,
             per_irrep=per_irrep,
         )
@@ -308,6 +325,73 @@ def _parse_override_spec(spec: str) -> tuple[str, int, str] | None:
     if not m:
         return None
     return m.group(1), int(m.group(2)), m.group(3)
+
+
+def _shell_sort_key(shell: str) -> tuple[int, str]:
+    """排序键: '5f' → (5, 'f')。"""
+    n = int(''.join(c for c in shell if c.isdigit()) or '0')
+    l = ''.join(c for c in shell if c.isalpha()).lower()
+    return (n, l)
+
+
+def _format_shell_list(shells: list[str]) -> str:
+    """合并相同 n 的壳层: ['5d','5f','6s','6p'] → '5df, 6sp'。"""
+    if not shells:
+        return ""
+    grouped: dict[int, list[str]] = {}
+    for s in shells:
+        n = int(''.join(c for c in s if c.isdigit()) or '0')
+        l = ''.join(c for c in s if c.isalpha()).lower()
+        grouped.setdefault(n, []).append(l)
+    parts = []
+    for n in sorted(grouped):
+        parts.append(f"{n}{''.join(sorted(grouped[n]))}")
+    return ", ".join(parts)
+
+
+def _build_shell_summary(
+    sao_labels: dict[str, list[str]], atoms: list[str]
+) -> dict[str, dict[str, str]]:
+    """从 SAO 标签中提取每 tier 的原子壳层组成。
+
+    标签格式: "1U5F-2" → atom_index=1, element=U, n=5, l=F, m=-2
+    """
+    import re as _r
+    tier_keys = ("frozen_core", "outer_core", "inactive", "active", "virtual")
+    result: dict[str, dict[str, str]] = {}
+    for tier in tier_keys:
+        shells: dict[str, set[str]] = {}  # "U" → {"5f", "6d", ...}
+        for label in sao_labels.get(tier, []):
+            m = _r.match(r'(\d+)([A-Z][a-z]?)(\d+)([A-Z])(-?\d+)', label)
+            if m:
+                element = m.group(2)
+                shell = f"{m.group(3)}{m.group(4).lower()}"
+                shells.setdefault(element, set()).add(shell)
+        result[tier] = {
+            elem: _format_shell_list(sorted(list(s), key=_shell_sort_key))
+            for elem, s in sorted(shells.items(),
+                                   key=lambda x: (len(atoms) > 1 and atoms.index(x[0]) if x[0] in atoms else 99, x[0]))
+        }
+    return result
+
+
+def _merge_shell_sets(
+    merged: dict[str, dict[str, set[str]]],
+    irrep_sets: dict[str, dict[str, set[str]]],
+    sao_labels: dict[str, list[str]],
+    atoms: list[str],
+) -> dict[str, dict[str, set[str]]]:
+    """跨 irrep 合并壳层集合。"""
+    import re as _r
+    tier_keys = ("frozen_core", "outer_core", "inactive", "active", "virtual")
+    for tier in tier_keys:
+        for label in sao_labels.get(tier, []):
+            m = _r.match(r'(\d+)([A-Z][a-z]?)(\d+)([A-Z])(-?\d+)', label)
+            if m:
+                element = m.group(2)
+                shell = f"{m.group(3)}{m.group(4).lower()}"
+                merged.setdefault(tier, {}).setdefault(element, set()).add(shell)
+    return merged
 
 
 def _detect_effective_group(sao: SAOParseResult) -> str:
