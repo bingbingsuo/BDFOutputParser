@@ -395,11 +395,13 @@ class BDFOutputParser:
         # 详细格式优先: "No. 1 w= ... a.u. f= ... Ova= ..."
         detail_states = self._parse_tddft_detail_format(content)
         if detail_states:
+            self._sort_and_label(detail_states)
             return [TDDFTBlock(states=detail_states)]
 
         # 备选格式: "No.  1   w=  9.8445 eV ... f=  0.0906"
         alt_states = self._parse_tddft_alt_format(content)
         if alt_states:
+            self._sort_and_label(alt_states)
             return [TDDFTBlock(states=alt_states)]
 
         spin_matches = list(P.TDDFT_SPIN_CHANGE.finditer(content))
@@ -408,6 +410,7 @@ class BDFOutputParser:
             if P.TDDFT_HEADER.search(content):
                 states = self._parse_excited_states_block(content)
                 if states:
+                    self._sort_and_label(states)
                     return [TDDFTBlock(states=states)]
             return []
 
@@ -430,7 +433,47 @@ class BDFOutputParser:
                 states=states,
             ))
 
+        # 跨 block 全局排序
+        self._sort_tddft_blocks(blocks)
         return blocks
+
+    @staticmethod
+    def _sort_and_label(states: list[ExcitedState]) -> None:
+        """按能量升序排列激发态，分配 S1/S2/T1/T2 标签。
+
+        如果状态没有 isf 信息（单块单重态），默认全部标 S。
+        """
+        states.sort(key=lambda s: s.energy_ev)
+        for i, s in enumerate(states):
+            # 无 isf 的默认标 S（单重态）
+            s.index = i + 1
+            s.label = f"S{i + 1}"
+
+    @staticmethod
+    def _sort_tddft_blocks(blocks: list[TDDFTBlock]) -> None:
+        """跨 TDDFT block 全局排序：按 isf 分组，每组内按能量排序并标 S1/S2/T1/T2。"""
+        # 收集所有 (isf, state) 对
+        pairs: list[tuple[Optional[int], ExcitedState]] = []
+        for block in blocks:
+            for s in block.states:
+                pairs.append((block.isf, s))
+
+        # 按 isf 分组，每组内按能量升序
+        singlets = [(i, s) for i, s in pairs if i in (0, None)]
+        triplets = [(i, s) for i, s in pairs if i == 1]
+
+        singlets.sort(key=lambda x: x[1].energy_ev)
+        triplets.sort(key=lambda x: x[1].energy_ev)
+
+        # 分配全局标签
+        for idx, (_, s) in enumerate(singlets):
+            s.label = f"S{idx + 1}"
+        for idx, (_, s) in enumerate(triplets):
+            s.label = f"T{idx + 1}"
+
+        # 更新 block 内排序
+        for block in blocks:
+            block.states.sort(key=lambda s: s.energy_ev)
 
     def _parse_excited_states_block(self, block: str) -> list[ExcitedState]:
         """解析单个 TDDFT 块中的激发态表"""

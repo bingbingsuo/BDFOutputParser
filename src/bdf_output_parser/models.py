@@ -147,6 +147,7 @@ class ExcitedState(BaseModel):
     total_energy_au: Optional[float] = None   # 激发态总能量 (a.u.)
     ova: Optional[float] = None               # 绝对重叠积分 (0=CT, 1=local)
     cv_transitions: list[CVTransition] = []    # 组态矢量跃迁列表
+    label: str = ""                            # 全局排序标签: S1/S2/T1/T2
 
 
 class TDDFTBlock(BaseModel):
