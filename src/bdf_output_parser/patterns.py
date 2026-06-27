@@ -231,7 +231,24 @@ THERMO_E_THERMAL = re.compile(rf'Electronic\s+\+\s+Thermal\s*=\s*({_FLOAT})', re
 THERMO_E_ENTHALPY = re.compile(rf'Electronic\s+\+\s+Enthalpy\s*=\s*({_FLOAT})', re.IGNORECASE)
 THERMO_E_GIBBS = re.compile(rf'Electronic\s+\+\s+Gibbs\s*=\s*({_FLOAT})', re.IGNORECASE)
 
-# Alternative TDDFT format: "No.     1    w=      9.8445 eV"
+# Detailed TDDFT format: "No. 1 w= 14.5119 eV -74.741795 a.u. f=0.0638 D<Pab>=0.0000 Ova=0.6733"
+TDDFT_DETAIL_LINE = re.compile(
+    r'No\.\s+(\d+)\s+w=\s+([-\d.]+)\s+eV\s+([-\d.]+)\s+a\.u\.\s+f=\s+([-\d.]+)'
+    r'(?:\s+D<Pab>=\s*([-\d.]+))?(?:\s+Ova=\s*([-\d.]+))?',
+    re.IGNORECASE,
+)
+
+# CV(0): orbital transition line
+# "CV(0):   A1(   3 )->  A1(   4 )  c_i: -0.9681  Per: 93.7%  IPA:    15.947 eV  Oai: 0.6589"
+TDDFT_CV_LINE = re.compile(
+    r'CV\(\d+\):\s+(\S+)\s*\(\s*(\d+)\s*\)\s*->\s*(\S+)\s*\(\s*(\d+)\s*\)'
+    r'\s+c_i:\s*([-\d.]+)\s+Per:\s*([-\d.]+)%'
+    r'\s+IPA:\s*([-\d.]+)\s+eV'
+    r'(?:\s+Oai:\s*([-\d.]+))?',
+    re.IGNORECASE,
+)
+
+# Legacy: Alternative TDDFT format
 TDDFT_ALT_LINE = re.compile(
     r'No\.\s+(\d+)\s+w=\s+([-\d.]+)\s+eV\s+.*?f=\s+([-\d.]+)',
     re.IGNORECASE,

@@ -125,6 +125,16 @@ class ThermochemistryData(BaseModel):
     electronic_plus_gibbs: Optional[float] = None
 
 
+class CVTransition(BaseModel):
+    """TDDFT 激发态的单个组态矢量 (configuration vector) 跃迁"""
+    from_orbital: str = ""          # e.g. "A1(   3 )"
+    to_orbital: str = ""            # e.g. "A1(   4 )"
+    coefficient: float = 0.0        # CI 系数
+    percentage: float = 0.0         # 贡献百分比 (%)
+    ipa_ev: float = 0.0             # 独立粒子近似能量 (eV)
+    oai: Optional[float] = None     # 轨道对重叠积分
+
+
 class ExcitedState(BaseModel):
     """单个 TDDFT 激发态"""
     index: int
@@ -134,6 +144,9 @@ class ExcitedState(BaseModel):
     oscillator_strength: float
     delta_s2: Optional[float] = None
     dominant_transition: Optional[str] = None
+    total_energy_au: Optional[float] = None   # 激发态总能量 (a.u.)
+    ova: Optional[float] = None               # 绝对重叠积分 (0=CT, 1=local)
+    cv_transitions: list[CVTransition] = []    # 组态矢量跃迁列表
 
 
 class TDDFTBlock(BaseModel):

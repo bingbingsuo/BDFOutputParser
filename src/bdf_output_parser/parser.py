@@ -392,7 +392,12 @@ class BDFOutputParser:
     # =========================================================================
 
     def _extract_tddft(self, content: str) -> list[TDDFTBlock]:
-        # 备选格式优先: "No.  1   w=  9.8445 eV ... f=  0.0906"
+        # 详细格式优先: "No. 1 w= ... a.u. f= ... Ova= ..."
+        detail_states = self._parse_tddft_detail_format(content)
+        if detail_states:
+            return [TDDFTBlock(states=detail_states)]
+
+        # 备选格式: "No.  1   w=  9.8445 eV ... f=  0.0906"
         alt_states = self._parse_tddft_alt_format(content)
         if alt_states:
             return [TDDFTBlock(states=alt_states)]
@@ -468,6 +473,62 @@ class BDFOutputParser:
                 ))
             except (ValueError, IndexError):
                 continue
+
+        return states
+
+    @staticmethod
+    def _parse_tddft_detail_format(content: str) -> list[ExcitedState]:
+        """详细 TDDFT 格式: 'No. 1 w= ... a.u. f= ... Ova= ...' + CV lines."""
+        from .models import CVTransition
+        lines = content.splitlines()
+        states: list[ExcitedState] = []
+        current_state: Optional[ExcitedState] = None
+
+        for line in lines:
+            # Match detailed per-state header
+            dm = P.TDDFT_DETAIL_LINE.search(line)
+            if dm:
+                try:
+                    idx = int(dm.group(1))
+                    energy_ev = float(dm.group(2))
+                    total_au = float(dm.group(3))
+                    osc = float(dm.group(4))
+                    wl = 1239.84193 / energy_ev if energy_ev > 0 else 0.0
+                    state = ExcitedState(
+                        index=idx,
+                        energy_ev=energy_ev,
+                        wavelength_nm=round(wl, 2),
+                        oscillator_strength=osc,
+                        total_energy_au=total_au,
+                        ova=float(dm.group(6)) if dm.group(6) else None,
+                        delta_s2=float(dm.group(5)) if dm.group(5) else None,
+                    )
+                    states.append(state)
+                    current_state = state
+                except (ValueError, IndexError):
+                    continue
+                continue
+
+            # Match CV transition line (associated with current state)
+            cv_m = P.TDDFT_CV_LINE.search(line)
+            if cv_m and current_state:
+                try:
+                    cv = CVTransition(
+                        from_orbital=f"{cv_m.group(1)}({int(cv_m.group(2))})",
+                        to_orbital=f"{cv_m.group(3)}({int(cv_m.group(4))})",
+                        coefficient=float(cv_m.group(5)),
+                        percentage=float(cv_m.group(6)),
+                        ipa_ev=float(cv_m.group(7)),
+                        oai=float(cv_m.group(8)) if cv_m.group(8) else None,
+                    )
+                    current_state.cv_transitions.append(cv)
+                    # Set dominant transition from first (largest) CV
+                    if not current_state.dominant_transition and cv.percentage > 10:
+                        current_state.dominant_transition = (
+                            f"{cv.from_orbital}->{cv.to_orbital} ({cv.percentage:.0f}%)"
+                        )
+                except (ValueError, IndexError):
+                    continue
 
         return states
 
