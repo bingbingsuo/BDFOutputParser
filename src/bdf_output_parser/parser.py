@@ -653,11 +653,18 @@ class BDFOutputParser:
         final_energy = self._match_float(content, P.ENERGY_SCF)
         diis_error = self._match_float(content, P.SCF_DIIS_ERROR)
 
+        homo = self._match_float(content, P.HOMO_ENERGY)
+        lumo = self._match_float(content, P.LUMO_ENERGY)
+        gap = self._match_float(content, P.HOMO_LUMO_GAP)
+
         return SCFData(
             converged=converged,
             n_iterations=n_iterations,
             final_energy=final_energy,
             diis_error=diis_error,
+            homo_energy=homo,
+            lumo_energy=lumo,
+            homo_lumo_gap=gap,
         )
 
     # =========================================================================

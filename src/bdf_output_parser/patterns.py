@@ -222,6 +222,14 @@ SCF_FINAL_RESULT = re.compile(
 
 SCF_DIIS_ERROR = re.compile(rf'DIIS\s+error\s*[:=]\s*({_FLOAT})', re.IGNORECASE)
 
+# HOMO/LUMO energies (eV)
+HOMO_ENERGY = re.compile(
+    r'(?:Alpha\s+)?HOMO\s+energy:\s+[-\d.]+\s+au\s+([-\d.]+)\s+eV', re.IGNORECASE)
+LUMO_ENERGY = re.compile(
+    r'(?:Alpha\s+)?LUMO\s+energy:\s+[-\d.]+\s+au\s+([-\d.]+)\s+eV', re.IGNORECASE)
+HOMO_LUMO_GAP = re.compile(
+    r'HOMO-LUMO\s+gap:\s+[-\d.]+\s+au\s+([-\d.]+)\s+eV', re.IGNORECASE)
+
 # =============================================================================
 # Thermochemistry
 # =============================================================================

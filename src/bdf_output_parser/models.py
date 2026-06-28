@@ -178,6 +178,9 @@ class SCFData(BaseModel):
     n_iterations: int = 0
     final_energy: Optional[float] = None
     diis_error: Optional[float] = None
+    homo_energy: Optional[float] = None      # HOMO 能量 (eV)
+    lumo_energy: Optional[float] = None      # LUMO 能量 (eV)
+    homo_lumo_gap: Optional[float] = None    # HOMO-LUMO gap (eV)
 
 
 # =============================================================================
