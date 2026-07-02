@@ -10,6 +10,7 @@ from .parser import BDFOutputParser
 from .reporters.markdown import MarkdownReporter
 from .classifier import OrbitalClassifier, classify_with_symmetry
 from .symmetry import is_abelian, recommend_subgroup
+from .core_state import BDFCoreStateInspector
 from .models import (
     AOLabel,
     BDFParseResult,
@@ -29,6 +30,7 @@ from .models import (
     TDDFTBlock,
     OptimizationData,
     SCFData,
+    CoreStateSummary,
 )
 
 __all__ = [
@@ -56,4 +58,6 @@ __all__ = [
     "TDDFTBlock",
     "OptimizationData",
     "SCFData",
+    "CoreStateSummary",
+    "BDFCoreStateInspector",
 ]

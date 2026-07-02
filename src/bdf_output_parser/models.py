@@ -295,3 +295,33 @@ class OrbitalClassification(BaseModel):
     summary: dict[str, dict[str, str]] = {}
     # 给用户的提示（如全满价层轨道被纳入活性空间，供用户抉择是否收窄）
     notes: list[str] = []
+
+
+class CoreStateSummary(BaseModel):
+    """BDFCoreState `.bdfh5` 的归一化只读摘要（接口契约 §5）。
+
+    所有字段可空——BDFCoreState 仍在演进，缺失字段容忍。fail-closed：
+    h5py 缺 / 文件缺 / schema 不符时 available=False。
+    """
+    available: bool = False
+    reason: str = ""        # ok | h5py_unavailable | file_not_found | unsupported_schema | read_error
+    path: str = ""          # .bdfh5 路径（审计）
+    core_state_schema: str = ""  # /meta/core_state_schema（避免遮蔽 BaseModel.schema）
+    status: str = ""        # /run/status: completed|failed|interrupted|running
+    input_mode: str = ""    # /input/input_mode
+    current_context_id: Optional[int] = None
+    context_count: Optional[int] = None
+    current_module: str = ""
+    last_successful_module: str = ""
+    failed_module: str = ""
+    interrupted_module: str = ""
+    restartable: Optional[bool] = None
+    started_unix: Optional[int] = None
+    completed_unix: Optional[int] = None
+    elapsed_sec: Optional[float] = None
+    workflow: dict = {}     # {workflow_id, status, module_plan:[...], modules:{...}}
+    aliases: dict = {}      # {orbitals:{...}, geometries:{...}, chkfil:{...}}
+    objects: dict = {}      # {orbitals:[...], geometries:[...], chkfil_snapshots:[...]}
+    files: dict = {}        # {by_role:{chkfil:[...], geometry:[...], ...}}
+    diagnostics: dict = {}  # {<module>:{last_failure:{...}}} 失败时
+    provenance: dict = {}   # {build:{...}, runtime:{...}} 关键字段摘要
