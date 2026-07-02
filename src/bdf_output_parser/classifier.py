@@ -161,6 +161,22 @@ class OrbitalClassifier:
         total_act = sum(ir.n_active_orbitals for ir in per_irrep)
         total_virt = sum(ir.n_virtual_orbitals for ir in per_irrep)
 
+        # A 约定: 全满价层轨道（如 O 2s）一并纳入活性空间，不拆出 inactive。
+        # 这里检测这类轨道并生成提示，让用户自行决定是否用 overrides
+        # 将其移至 inactive 以缩小活性空间。
+        notes: list[str] = []
+        for sym in atoms:
+            _, _, vl = self._get_shell_tiers(sym)
+            full_valence, _ = self._split_valence(sym, vl)
+            if full_valence:
+                shells = sorted(f"{n}{l.lower()}" for (n, l) in full_valence)
+                shells_str = ", ".join(shells)
+                ov = ", ".join(f"'{sym}:{s}'" for s in shells)
+                notes.append(
+                    f"{sym} 的全满价层轨道 [{shells_str}] 已纳入活性空间。"
+                    f"如需更聚焦的活性空间，可用 overrides={{'inactive': [{ov}]}} 将其移至 inactive。"
+                )
+
         return OrbitalClassification(
             summary=global_summary,
             molecule="".join(atoms),
@@ -175,6 +191,7 @@ class OrbitalClassifier:
             total_virtual_orbitals=total_virt,
             n_basis=sao.n_basis,
             per_irrep=per_irrep,
+            notes=notes,
         )
 
     @staticmethod

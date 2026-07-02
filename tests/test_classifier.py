@@ -36,15 +36,19 @@ SAO_WATER_C2V = SAOParseResult(
 
 class TestOrbitalClassifier:
     def test_water_c2v(self):
-        """O: [He]2s2 2p4 → oc={1S}, inactive={2S}, active={2P} + H:vl=1S"""
+        """O: [He] 2s2 2p4 → outer_core={1S}, 全价层 active={2S,2P}; H: 1s active。
+        A 约定: 全满价层（如 O 2s）不拆出 inactive，一并进 active。
+        notes 会提示用户 2s 在活性空间，可自行决定是否收窄。"""
         cls = OrbitalClassifier().classify(SAO_WATER_C2V, atoms=["O", "H", "H"])
 
         assert cls.n_basis == 7
         assert cls.n_electrons == 10
         assert cls.n_frozen_core_electrons == 0    # no deep core (He max_n=1)
         assert cls.n_outer_core_electrons == 2      # O 1s²
-        assert cls.n_inactive_electrons == 2        # O 2s²
-        assert cls.n_active_electrons == 6          # O 2p⁴ + H 1s²
+        assert cls.n_inactive_electrons == 0        # A 约定: O 2s 不拆出
+        assert cls.n_active_electrons == 8          # O 2s²2p⁴ + H 1s²
+        # A 约定下全满价层 2s 进了 active，应有提示让用户抉择
+        assert any("2s" in n for n in cls.notes)
 
     def test_shell_tiers(self):
         """验证五层级判定"""
@@ -61,12 +65,13 @@ class TestOrbitalClassifier:
         assert (2, "P") in active       # 2p⁵ — partial
 
     def test_overrides(self):
-        """覆盖: F 2s2p → frozen_core"""
+        """覆盖: H 1s → frozen_core。A 约定下 O 2s 仍在 active。"""
         cls = OrbitalClassifier().classify(SAO_WATER_C2V, atoms=["O", "H", "H"],
             overrides={"frozen_core": ["H:1s"]})
-        # H 1s goes from active to frozen_core
-        assert cls.n_active_electrons == 4    # only O 2p⁴ left active
+        # H 1s 从 active 移到 frozen_core; O 2s²2p⁴ 留在 active
+        assert cls.n_active_electrons == 6    # O 2s²2p⁴
         assert cls.n_frozen_core_electrons == 2  # H 1s² moved to frozen_core
+        assert any("2s" in n for n in cls.notes)
 
     def test_no_sao_data(self):
         """空 SAO 数据"""

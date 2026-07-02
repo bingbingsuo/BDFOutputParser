@@ -293,3 +293,5 @@ class OrbitalClassification(BaseModel):
     per_irrep: list[IrrepClassification] = []
     # 全局 summary: 跨 irrep 合并的原子壳层组成
     summary: dict[str, dict[str, str]] = {}
+    # 给用户的提示（如全满价层轨道被纳入活性空间，供用户抉择是否收窄）
+    notes: list[str] = []
