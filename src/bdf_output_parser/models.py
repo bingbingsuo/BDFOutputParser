@@ -325,3 +325,4 @@ class CoreStateSummary(BaseModel):
     files: dict = {}        # {by_role:{chkfil:[...], geometry:[...], ...}}
     diagnostics: dict = {}  # {<module>:{last_failure:{...}}} 失败时
     provenance: dict = {}   # {build:{...}, runtime:{...}} 关键字段摘要
+    restart: dict = {}      # Phase 6: /restart/{scratch,modules,assets} restart capability

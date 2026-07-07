@@ -134,7 +134,42 @@ class BDFCoreStateInspector:
         # /provenance (§6.10) — 关键字段摘要
         s.provenance = self._read_provenance(h5)
 
+        # /restart (Phase 6) — scratch preservation + restart capability
+        s.restart = self._read_restart(h5)
+
         return s
+
+    def _read_restart(self, h5) -> dict:
+        """Read /restart/{scratch,modules,assets} (Phase 6 restart contract).
+
+        Conservative: returns {} when the group is absent so callers can treat
+        a missing restart capability as "no restart info" rather than failure.
+        """
+        restart = {}
+        if "/restart" not in h5:
+            return restart
+
+        scratch_base = "/restart/scratch"
+        if scratch_base in h5:
+            restart["scratch"] = _attrs_to_dict(h5[scratch_base])
+
+        modules = {}
+        modules_base = "/restart/modules"
+        if modules_base in h5:
+            for name in h5[modules_base]:
+                modules[name] = _attrs_to_dict(h5[modules_base + "/" + name])
+        if modules:
+            restart["modules"] = modules
+
+        assets = {}
+        assets_base = "/restart/assets"
+        if assets_base in h5:
+            for name in h5[assets_base]:
+                assets[name] = _attrs_to_dict(h5[assets_base + "/" + name])
+        if assets:
+            restart["assets"] = assets
+
+        return restart
 
     def _read_workflow(self, h5) -> dict:
         wf = {}

@@ -20,7 +20,8 @@ REAL_TEST003 = Path("/Users/bsuo/tests/bdf/debug/test003.bdfh5")
 def _make_bdfh5(path, *, schema="BDFCoreState-v1.0", status="completed",
                 failed_module="", interrupted_module="",
                 last_successful_module="scf",
-                with_orbital_alias=False, with_diagnostics=False):
+                with_orbital_alias=False, with_diagnostics=False,
+                with_restart=False):
     """写一个最小但结构合法的合成 .bdfh5。"""
     with h5py.File(path, "w") as f:
         f.create_dataset("meta/core_state_schema", data=schema)
@@ -56,6 +57,24 @@ def _make_bdfh5(path, *, schema="BDFCoreState-v1.0", status="completed",
             lf.attrs["reason"] = "SCF did not converge"
             lf.attrs["failure_class"] = "controlled_error"
             lf.attrs["restartable"] = 1
+        if with_restart:
+            scratch = f.create_group("restart/scratch")
+            scratch.attrs["tmpdir"] = "/tmp/bdf-scratch"
+            scratch.attrs["preserved"] = True
+            scratch.attrs["preserve_reason"] = "module_failure"
+            scratch.attrs["lock_files_removed"] = True
+            mod = f.create_group("restart/modules/000002")
+            mod.attrs["module"] = "scf"
+            mod.attrs["ordinal"] = 2
+            mod.attrs["status"] = "failed"
+            mod.attrs["restartable_from_here"] = "planned"
+            mod.attrs["support_status"] = "planned_first"
+            asset = f.create_group("restart/assets/scforb")
+            asset.attrs["kind"] = "scforb"
+            asset.attrs["producer_module"] = "scf"
+            asset.attrs["exists"] = True
+            asset.attrs["persistent"] = False
+            asset.attrs["required_for"] = "scf_readmo_restart"
 
 
 # -----------------------------------------------------------------------------
@@ -118,8 +137,24 @@ class TestSynthetic:
         assert s.available is True
         assert s.status == "completed"
         assert s.last_successful_module == "scf"
+
+    def test_restart_contract_summary(self, tmp_path):
+        p = tmp_path / "restart.bdfh5"
+        _make_bdfh5(
+            p,
+            status="failed",
+            failed_module="scf",
+            last_successful_module="xuanyuan",
+            with_restart=True,
+        )
+        s = BDFCoreStateInspector().read(str(p))
+        assert s.available is True
+        assert s.restart["scratch"]["preserved"] is True
+        assert s.restart["scratch"]["preserve_reason"] == "module_failure"
+        assert s.restart["modules"]["000002"]["support_status"] == "planned_first"
+        assert s.restart["assets"]["scforb"]["required_for"] == "scf_readmo_restart"
         assert s.input_mode == "easyinput"
-        assert s.workflow["status"] == "completed"
+        assert s.workflow["status"] == "failed"
         assert len(s.workflow["module_plan"]) == 2
 
     def test_failed_run_with_diagnostics(self, tmp_path):
