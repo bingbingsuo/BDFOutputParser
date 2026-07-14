@@ -177,7 +177,12 @@ class BDFOutputParser:
             restart,
         )
 
-        field_sources = self._build_field_sources(parse_result, core_summary, restart)
+        field_sources = self._build_field_sources(
+            parse_result,
+            core_summary,
+            diagnostics,
+            restart,
+        )
         raw_refs = self._build_raw_refs(out_path, out_tmp_path, hdf5_path)
         results = self._build_results(parse_result)
 
@@ -385,22 +390,22 @@ class BDFOutputParser:
                 continue
             blocks = self._extract_structured_blocks(text, "BDF_ERROR")
             for body in blocks:
-                record = {
-                    "source": source,
-                    "message": body.strip(),
-                    "severity": "error",
-                }
+                record = self._structured_block_to_record(
+                    body,
+                    source=source,
+                    default_severity="fatal",
+                )
                 if diagnostics["primary_failure"] is None:
                     diagnostics["primary_failure"] = record
                 else:
                     diagnostics["secondary_diagnostics"].append(record)
             for body in self._extract_structured_blocks(text, "BDF_WARNING"):
                 diagnostics["warnings"].append(
-                    {
-                        "source": source,
-                        "message": body.strip(),
-                        "severity": "warning",
-                    }
+                    self._structured_block_to_record(
+                        body,
+                        source=source,
+                        default_severity="warning",
+                    )
                 )
 
         primary = diagnostics.get("primary_failure")
@@ -458,6 +463,32 @@ class BDFOutputParser:
         return [match.group(1) for match in pattern.finditer(text)]
 
     @staticmethod
+    def _structured_block_to_record(
+        body: str,
+        *,
+        source: str,
+        default_severity: str,
+    ) -> dict[str, Any]:
+        record: dict[str, Any] = {
+            "source": source,
+            "message": body.strip(),
+            "severity": default_severity,
+        }
+        for raw_line in body.splitlines():
+            line = raw_line.strip()
+            if not line or ":" not in line:
+                continue
+            key, value = line.split(":", 1)
+            normalized_key = key.strip().lower()
+            if not normalized_key:
+                continue
+            record[normalized_key] = value.strip()
+        if record.get("primary") is not None:
+            record["primary"] = str(record["primary"]).lower() in {"yes", "true", "1"}
+        record["severity"] = record.get("severity") or default_severity
+        return record
+
+    @staticmethod
     def _build_unified_restart(
         core_summary: dict[str, Any] | None,
         artifact_paths: dict[str, str] | None,
@@ -476,6 +507,7 @@ class BDFOutputParser:
     def _build_field_sources(
         parse_result: BDFParseResult | None,
         core_summary: dict[str, Any] | None,
+        diagnostics: dict[str, Any],
         restart: dict[str, Any],
     ) -> dict[str, str]:
         sources = {}
@@ -485,6 +517,9 @@ class BDFOutputParser:
                 sources["diagnostics.primary_failure"] = "hdf5"
         elif parse_result:
             sources["run_status"] = "output"
+        primary = diagnostics.get("primary_failure") if isinstance(diagnostics, dict) else None
+        if isinstance(primary, dict) and primary.get("source"):
+            sources.setdefault("diagnostics.primary_failure", str(primary["source"]))
         if parse_result:
             if parse_result.energies.total_energy is not None:
                 sources["results.energies.total_energy"] = "output"

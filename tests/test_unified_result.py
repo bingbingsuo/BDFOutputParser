@@ -150,7 +150,9 @@ message: SCF did not converge
 
     assert result.run_status == UnifiedRunStatus.FAILED
     assert result.diagnostics["primary_failure"]["source"] == "output"
-    assert "SCF_NOT_CONVERGED" in result.diagnostics["primary_failure"]["message"]
+    assert result.diagnostics["primary_failure"]["code"] == "SCF_NOT_CONVERGED"
+    assert result.diagnostics["primary_failure"]["category"] == "SCF_CONVERGENCE"
+    assert result.field_sources["diagnostics.primary_failure"] == "output"
 
 
 def test_read_records_missing_optional_refs(tmp_path):
