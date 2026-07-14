@@ -143,6 +143,9 @@ class BDFOutputParser:
         out_tmp_text = self._read_optional_text(out_tmp_path)
         parse_result = self.parse(output_text) if output_text is not None else None
         core_summary = self._read_core_state(hdf5_path)
+        hdf5_scf_result = self._extract_hdf5_scf_result(core_summary)
+        hdf5_opt_result = self._extract_hdf5_opt_result(core_summary)
+        hdf5_tddft_result = self._extract_hdf5_tddft_result(core_summary)
 
         parse_status = self._unified_parse_status(parse_result, out_path)
         output_run_status = self._run_status_from_output(parse_result, output_text)
@@ -169,6 +172,8 @@ class BDFOutputParser:
             hdf5_run_status=hdf5_run_status,
             output_run_status=output_run_status,
             parse_result=parse_result,
+            hdf5_scf_result=hdf5_scf_result,
+            hdf5_tddft_result=hdf5_tddft_result,
         )
         result_status = self._unified_result_status(
             run_status,
@@ -182,9 +187,17 @@ class BDFOutputParser:
             core_summary,
             diagnostics,
             restart,
+            hdf5_scf_result,
+            hdf5_opt_result,
+            hdf5_tddft_result,
         )
         raw_refs = self._build_raw_refs(out_path, out_tmp_path, hdf5_path)
-        results = self._build_results(parse_result)
+        results = self._build_results(
+            parse_result,
+            hdf5_scf_result,
+            hdf5_opt_result,
+            hdf5_tddft_result,
+        )
 
         return BDFUnifiedResult(
             task_type=str(parse_result.task_type.value) if parse_result else None,
@@ -205,6 +218,7 @@ class BDFOutputParser:
                 parse_result,
                 diagnostics,
                 consistency_warnings,
+                hdf5_tddft_result,
             ),
             field_sources=field_sources,
             consistency_warnings=consistency_warnings,
@@ -310,27 +324,99 @@ class BDFOutputParser:
         return UnifiedResultStatus.UNKNOWN
 
     @staticmethod
-    def _build_results(parse_result: BDFParseResult | None) -> dict[str, Any]:
+    def _build_results(
+        parse_result: BDFParseResult | None,
+        hdf5_scf_result: dict[str, Any] | None = None,
+        hdf5_opt_result: dict[str, Any] | None = None,
+        hdf5_tddft_result: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
         if parse_result is None:
-            return {}
-        return {
-            "energies": parse_result.energies.model_dump(mode="json"),
-            "scf": parse_result.scf.model_dump(mode="json"),
-            "geometry": parse_result.geometry.model_dump(mode="json"),
-            "optimization": parse_result.optimization.model_dump(mode="json"),
-            "frequency": parse_result.frequencies.model_dump(mode="json"),
-            "thermochemistry": parse_result.thermochemistry.model_dump(mode="json"),
-            "tddft": {
-                "blocks": [
-                    block.model_dump(mode="json")
-                    for block in parse_result.tddft_blocks
-                ],
-                "excited_states": [
-                    state.model_dump(mode="json")
-                    for state in parse_result.excited_states
-                ],
-            },
-        }
+            results: dict[str, Any] = {}
+        else:
+            results = {
+                "energies": parse_result.energies.model_dump(mode="json"),
+                "scf": parse_result.scf.model_dump(mode="json"),
+                "geometry": parse_result.geometry.model_dump(mode="json"),
+                "optimization": parse_result.optimization.model_dump(mode="json"),
+                "frequency": parse_result.frequencies.model_dump(mode="json"),
+                "thermochemistry": parse_result.thermochemistry.model_dump(mode="json"),
+                "tddft": {
+                    "blocks": [
+                        block.model_dump(mode="json")
+                        for block in parse_result.tddft_blocks
+                    ],
+                    "excited_states": [
+                        state.model_dump(mode="json")
+                        for state in parse_result.excited_states
+                    ],
+                },
+            }
+
+        if hdf5_scf_result:
+            energies = results.setdefault("energies", {})
+            scf = results.setdefault("scf", {})
+            if hdf5_scf_result.get("total_energy") is not None:
+                energies["total_energy"] = hdf5_scf_result["total_energy"]
+            if hdf5_scf_result.get("scf_energy") is not None:
+                energies["scf_energy"] = hdf5_scf_result["scf_energy"]
+                scf["final_energy"] = hdf5_scf_result["scf_energy"]
+            if hdf5_scf_result.get("converged") is not None:
+                scf["converged"] = hdf5_scf_result["converged"]
+            if hdf5_scf_result.get("n_iterations") is not None:
+                scf["n_iterations"] = hdf5_scf_result["n_iterations"]
+            if hdf5_scf_result.get("latest"):
+                scf["latest"] = hdf5_scf_result["latest"]
+            if hdf5_scf_result.get("contexts"):
+                scf["contexts"] = hdf5_scf_result["contexts"]
+
+        if hdf5_opt_result:
+            hdf5_geometry = hdf5_opt_result.get("geometry") or {}
+            hdf5_optimization = hdf5_opt_result.get("optimization") or {}
+            geometry = results.setdefault("geometry", {})
+            optimization = results.setdefault("optimization", {})
+
+            if isinstance(hdf5_geometry, dict):
+                current = hdf5_geometry.get("current")
+                final = hdf5_geometry.get("final")
+                if current:
+                    geometry["current"] = current
+                if final:
+                    geometry["final"] = final
+                    if final.get("atoms"):
+                        geometry["atoms"] = final["atoms"]
+                elif current and not geometry.get("atoms"):
+                    # Current geometry is restart-ready, but it is not the
+                    # public final geometry. Keep it under geometry.current.
+                    geometry.setdefault("atoms", [])
+
+            if isinstance(hdf5_optimization, dict) and hdf5_optimization:
+                optimization.update(hdf5_optimization)
+
+        if hdf5_tddft_result:
+            tddft = results.setdefault("tddft", {})
+            states = hdf5_tddft_result.get("states") or []
+            for key in (
+                "itda",
+                "tda",
+                "isf",
+                "n_roots_requested",
+                "n_roots_found",
+                "imaginary_complex_count",
+                "negative_excitation_count",
+            ):
+                if hdf5_tddft_result.get(key) is not None:
+                    tddft[key] = hdf5_tddft_result[key]
+            tddft["excited_states"] = states
+            tddft["blocks"] = [
+                {
+                    "isf": hdf5_tddft_result.get("isf"),
+                    "itda": hdf5_tddft_result.get("itda"),
+                    "tda": hdf5_tddft_result.get("tda"),
+                    "states": states,
+                }
+            ]
+
+        return results
 
     @staticmethod
     def _build_execution(core_summary: dict[str, Any] | None) -> dict[str, Any]:
@@ -509,6 +595,9 @@ class BDFOutputParser:
         core_summary: dict[str, Any] | None,
         diagnostics: dict[str, Any],
         restart: dict[str, Any],
+        hdf5_scf_result: dict[str, Any] | None = None,
+        hdf5_opt_result: dict[str, Any] | None = None,
+        hdf5_tddft_result: dict[str, Any] | None = None,
     ) -> dict[str, str]:
         sources = {}
         if core_summary and core_summary.get("available"):
@@ -520,6 +609,15 @@ class BDFOutputParser:
         primary = diagnostics.get("primary_failure") if isinstance(diagnostics, dict) else None
         if isinstance(primary, dict) and primary.get("source"):
             sources.setdefault("diagnostics.primary_failure", str(primary["source"]))
+        warning_sources = {
+            str(warning.get("source"))
+            for warning in diagnostics.get("warnings", [])
+            if isinstance(warning, dict) and warning.get("source")
+        }
+        if warning_sources:
+            sources["diagnostics.warnings"] = (
+                next(iter(warning_sources)) if len(warning_sources) == 1 else "mixed"
+            )
         if parse_result:
             if parse_result.energies.total_energy is not None:
                 sources["results.energies.total_energy"] = "output"
@@ -535,6 +633,36 @@ class BDFOutputParser:
                 sources["results.frequency.frequencies"] = "output"
             if parse_result.tddft_blocks:
                 sources["results.tddft.states"] = "output"
+        if hdf5_scf_result:
+            if hdf5_scf_result.get("total_energy") is not None:
+                sources["results.energies.total_energy"] = "hdf5"
+            if hdf5_scf_result.get("scf_energy") is not None:
+                sources["results.energies.scf_energy"] = "hdf5"
+            if hdf5_scf_result.get("converged") is not None:
+                sources["results.scf.converged"] = "hdf5"
+            if hdf5_scf_result.get("n_iterations") is not None:
+                sources["results.scf.n_iterations"] = "hdf5"
+            if hdf5_scf_result.get("contexts"):
+                sources["results.scf.contexts"] = "hdf5"
+        if hdf5_opt_result:
+            geometry = hdf5_opt_result.get("geometry") or {}
+            optimization = hdf5_opt_result.get("optimization") or {}
+            if isinstance(geometry, dict):
+                if geometry.get("current"):
+                    source = str(geometry["current"].get("source") or "hdf5")
+                    sources["results.geometry.current"] = source
+                if geometry.get("final"):
+                    sources["results.geometry.final"] = "hdf5"
+            if isinstance(optimization, dict):
+                if optimization.get("converged") is not None:
+                    sources["results.optimization.converged"] = "hdf5"
+                if optimization.get("n_steps") is not None:
+                    sources["results.optimization.n_steps"] = "hdf5"
+        if hdf5_tddft_result:
+            if hdf5_tddft_result.get("states"):
+                sources["results.tddft.states"] = "hdf5"
+            if hdf5_tddft_result.get("n_roots_found") is not None:
+                sources["results.tddft.n_roots_found"] = "hdf5"
         if restart:
             if core_summary and core_summary.get("restart"):
                 sources["restart.assets"] = "hdf5"
@@ -570,6 +698,8 @@ class BDFOutputParser:
         hdf5_run_status: UnifiedRunStatus | None,
         output_run_status: UnifiedRunStatus | None,
         parse_result: BDFParseResult | None,
+        hdf5_scf_result: dict[str, Any] | None = None,
+        hdf5_tddft_result: dict[str, Any] | None = None,
     ) -> list[ConsistencyWarning]:
         warnings = []
         if (
@@ -600,13 +730,148 @@ class BDFOutputParser:
                         message="Output total energy and SCF final energy differ.",
                     )
                 )
+        if parse_result and hdf5_scf_result:
+            output_scf = parse_result.energies.scf_energy or parse_result.scf.final_energy
+            hdf5_scf = hdf5_scf_result.get("scf_energy")
+            if output_scf is not None and hdf5_scf is not None and abs(output_scf - hdf5_scf) > 1e-8:
+                warnings.append(
+                    ConsistencyWarning(
+                        field="results.energies.scf_energy",
+                        hdf5_value=hdf5_scf,
+                        output_value=output_scf,
+                        tolerance=1e-8,
+                        severity="warning",
+                        message="HDF5 SCF energy and output-derived SCF energy disagree.",
+                    )
+                )
+        if parse_result and hdf5_tddft_result:
+            warnings.extend(
+                BDFOutputParser._build_tddft_consistency_warnings(
+                    parse_result,
+                    hdf5_tddft_result,
+                )
+            )
         return warnings
+
+    @staticmethod
+    def _build_tddft_consistency_warnings(
+        parse_result: BDFParseResult,
+        hdf5_tddft_result: dict[str, Any],
+    ) -> list[ConsistencyWarning]:
+        warnings: list[ConsistencyWarning] = []
+        output_states = parse_result.excited_states
+        hdf5_states = hdf5_tddft_result.get("states") or []
+        if not output_states or not hdf5_states:
+            return warnings
+
+        if len(output_states) != len(hdf5_states):
+            warnings.append(
+                ConsistencyWarning(
+                    field="results.tddft.states",
+                    hdf5_value=len(hdf5_states),
+                    output_value=len(output_states),
+                    severity="warning",
+                    message="HDF5 TDDFT root count and output-derived root count disagree.",
+                )
+            )
+
+        for idx, (output_state, hdf5_state) in enumerate(zip(output_states, hdf5_states), start=1):
+            hdf5_energy = hdf5_state.get("energy_ev") if isinstance(hdf5_state, dict) else None
+            output_energy = output_state.energy_ev
+            if hdf5_energy is not None and abs(float(hdf5_energy) - output_energy) > 1e-4:
+                warnings.append(
+                    ConsistencyWarning(
+                        field=f"results.tddft.states[{idx}].energy_ev",
+                        hdf5_value=float(hdf5_energy),
+                        output_value=output_energy,
+                        tolerance=1e-4,
+                        severity="warning",
+                        message="HDF5 TDDFT root energy and output-derived energy disagree.",
+                    )
+                )
+                break
+
+            hdf5_osc = hdf5_state.get("oscillator_strength") if isinstance(hdf5_state, dict) else None
+            output_osc = output_state.oscillator_strength
+            if hdf5_osc is not None and abs(float(hdf5_osc) - output_osc) > 1e-5:
+                warnings.append(
+                    ConsistencyWarning(
+                        field=f"results.tddft.states[{idx}].oscillator_strength",
+                        hdf5_value=float(hdf5_osc),
+                        output_value=output_osc,
+                        tolerance=1e-5,
+                        severity="warning",
+                        message="HDF5 TDDFT oscillator strength and output-derived value disagree.",
+                    )
+                )
+                break
+
+        return warnings
+
+    @staticmethod
+    def _extract_hdf5_scf_result(core_summary: dict[str, Any] | None) -> dict[str, Any] | None:
+        if not core_summary or not core_summary.get("available"):
+            return None
+        hdf5_results = core_summary.get("results") or {}
+        if not isinstance(hdf5_results, dict):
+            return None
+
+        energy = hdf5_results.get("energy") or {}
+        scf = hdf5_results.get("scf") or {}
+        contexts = hdf5_results.get("contexts") or {}
+        if not energy and not scf and not contexts:
+            return None
+
+        result: dict[str, Any] = {}
+        if isinstance(energy, dict) and energy.get("total_energy_hartree") is not None:
+            result["total_energy"] = energy.get("total_energy_hartree")
+        if isinstance(scf, dict):
+            if scf.get("scf_energy_hartree") is not None:
+                result["scf_energy"] = scf.get("scf_energy_hartree")
+            if scf.get("converged") is not None:
+                result["converged"] = scf.get("converged")
+            if scf.get("n_iterations") is not None:
+                result["n_iterations"] = scf.get("n_iterations")
+            if scf:
+                result["latest"] = {"energy": energy, "scf": scf}
+        if isinstance(contexts, dict) and contexts:
+            result["contexts"] = contexts
+
+        return result or None
+
+    @staticmethod
+    def _extract_hdf5_opt_result(core_summary: dict[str, Any] | None) -> dict[str, Any] | None:
+        if not core_summary or not core_summary.get("available"):
+            return None
+        hdf5_results = core_summary.get("results") or {}
+        if not isinstance(hdf5_results, dict):
+            return None
+
+        geometry = hdf5_results.get("geometry") or {}
+        optimization = hdf5_results.get("optimization") or {}
+        result: dict[str, Any] = {}
+        if isinstance(geometry, dict) and geometry:
+            result["geometry"] = geometry
+        if isinstance(optimization, dict) and optimization:
+            result["optimization"] = optimization
+        return result or None
+
+    @staticmethod
+    def _extract_hdf5_tddft_result(core_summary: dict[str, Any] | None) -> dict[str, Any] | None:
+        if not core_summary or not core_summary.get("available"):
+            return None
+        hdf5_results = core_summary.get("results") or {}
+        if not isinstance(hdf5_results, dict):
+            return None
+        tddft = hdf5_results.get("tddft") or {}
+        return tddft if isinstance(tddft, dict) and tddft else None
 
     @staticmethod
     def _build_quality(
         parse_result: BDFParseResult | None,
         diagnostics: dict[str, Any],
         consistency_warnings: list[ConsistencyWarning],
+        hdf5_tddft_result: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         quality = {
             "warnings_count": len(diagnostics.get("warnings") or []),
@@ -615,6 +880,12 @@ class BDFOutputParser:
         if parse_result:
             quality["n_imaginary_frequencies"] = parse_result.frequencies.n_imaginary
             quality["frequency_stable"] = parse_result.frequencies.is_stable
+        if hdf5_tddft_result:
+            imaginary = hdf5_tddft_result.get("imaginary_complex_count") or 0
+            negative = hdf5_tddft_result.get("negative_excitation_count") or 0
+            quality["tddft_imaginary_complex_count"] = int(imaginary)
+            quality["tddft_negative_excitation_count"] = int(negative)
+            quality["tddft_unstable_reference"] = int(imaginary) > 0 or int(negative) > 0
         return quality
 
     # =========================================================================
@@ -1356,7 +1627,6 @@ class BDFOutputParser:
                 continue
 
             sao_label = sao_label_m.group(0).strip().split()[0]  # "A1|1C1"
-            sao_idx = int(sao_label_m.group(2))
             comp = int(sao_label_m.group(3))
 
             # 解析 AO 标签（在当前行和后续行都可能出现）

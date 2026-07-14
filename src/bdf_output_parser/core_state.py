@@ -60,6 +60,58 @@ def _is_dataset(obj) -> bool:
     return hasattr(obj, "shape") and hasattr(obj, "dtype")
 
 
+def _dataset_list(h5, path: str) -> list | None:
+    if path not in h5:
+        return None
+    value = h5[path][()]
+    if hasattr(value, "tolist"):
+        value = value.tolist()
+    if not isinstance(value, list):
+        value = [value]
+    return value
+
+
+def _decode_bdf_label(value) -> str:
+    """Decode BDF fixed-width character labels stored as int64 cdafile data."""
+
+    try:
+        raw = int(value).to_bytes(8, byteorder="little", signed=False)
+        text = raw.decode("ascii", errors="ignore").strip()
+        if text:
+            return text.capitalize()
+    except (OverflowError, ValueError, TypeError):
+        pass
+    if isinstance(value, bytes):
+        return value.decode("ascii", errors="ignore").strip().capitalize()
+    return str(value).strip().capitalize()
+
+
+def _list_get(values: list, idx: int):
+    return values[idx] if idx < len(values) else None
+
+
+def _optional_float(target: dict, key: str, values: list, idx: int) -> None:
+    value = _list_get(values, idx)
+    if value is not None:
+        target[key] = float(value)
+
+
+def _optional_int(target: dict, key: str, values: list, idx: int) -> None:
+    value = _list_get(values, idx)
+    if value is not None:
+        target[key] = int(value)
+
+
+def _tddft_quality_label(flag: int) -> str:
+    if flag == 1:
+        return "imaginary_or_complex"
+    if flag == 2:
+        return "negative_excitation"
+    if flag == 3:
+        return "imaginary_or_complex_and_negative"
+    return "normal"
+
+
 class BDFCoreStateInspector:
     """只读 ``.bdfh5`` 摘要器。不写 HDF5，不保持文件句柄。"""
 
@@ -137,7 +189,274 @@ class BDFCoreStateInspector:
         # /restart (Phase 6) — scratch preservation + restart capability
         s.restart = self._read_restart(h5)
 
+        # /results and /contexts/<id>/results — first-slice scientific facts
+        s.results = self._read_results(h5)
+
         return s
+
+    def _read_results(self, h5) -> dict:
+        """Read first-slice scientific results from HDF5.
+
+        The first supported authority is SCF scalar data.  Top-level
+        /results/scf is a latest cache; /contexts/<id>/results/scf preserves
+        nested calculation history, such as repeated SCF calls from bdfopt.
+        """
+        out = {}
+
+        latest = self._read_result_root(h5, "/results")
+        if latest:
+            out.update(latest)
+
+        contexts = {}
+        if "/contexts" in h5:
+            for context_id in h5["/contexts"].keys():
+                context_result = self._read_result_root(
+                    h5,
+                    f"/contexts/{context_id}/results",
+                )
+                if context_result:
+                    contexts[context_id] = context_result
+        if contexts:
+            out["contexts"] = contexts
+
+        return out
+
+    def _read_result_root(self, h5, base: str) -> dict:
+        result = {}
+
+        energy = {}
+        total_energy = _scalar(h5, f"{base}/energy/total_energy_hartree", None)
+        if total_energy is not None:
+            energy["total_energy_hartree"] = total_energy
+        if energy:
+            result["energy"] = energy
+
+        scf = {}
+        scf_energy = _scalar(h5, f"{base}/scf/scf_energy_hartree", None)
+        if scf_energy is not None:
+            scf["scf_energy_hartree"] = scf_energy
+        converged = _scalar(h5, f"{base}/scf/converged", None)
+        if converged is not None:
+            scf["converged"] = bool(converged)
+        n_iterations = _scalar(h5, f"{base}/scf/n_iterations", None)
+        if n_iterations is not None:
+            scf["n_iterations"] = int(n_iterations)
+        source_context_id = _scalar(h5, f"{base}/scf/source_context_id", None)
+        if source_context_id is not None:
+            scf["source_context_id"] = int(source_context_id)
+        source_module_ordinal = _scalar(h5, f"{base}/scf/source_module_ordinal", None)
+        if source_module_ordinal is not None:
+            scf["source_module_ordinal"] = int(source_module_ordinal)
+        scf_path = f"{base}/scf"
+        if scf_path in h5 and not _is_dataset(h5[scf_path]):
+            attrs = _attrs_to_dict(h5[scf_path])
+            if attrs:
+                scf["attrs"] = attrs
+        if scf:
+            result["scf"] = scf
+
+        geometry = self._read_geometry_results(h5, base)
+        if geometry:
+            result["geometry"] = geometry
+
+        optimization = self._read_optimization_result(h5, base)
+        if optimization:
+            result["optimization"] = optimization
+
+        tddft = self._read_tddft_result(h5, base)
+        if tddft:
+            result["tddft"] = tddft
+
+        return result
+
+    def _read_geometry_results(self, h5, base: str) -> dict:
+        geometry = {}
+        current = self._read_geometry_group(
+            h5,
+            f"{base}/geometry/current",
+            coordinates_name="coordinates_bohr",
+            source_default="hdf5",
+        )
+        final = self._read_geometry_group(
+            h5,
+            f"{base}/geometry/final",
+            coordinates_name="coordinates_bohr",
+            source_default="hdf5",
+        )
+        if current:
+            geometry["current"] = current
+        if final:
+            geometry["final"] = final
+
+        if base == "/results" and not current:
+            legacy_current = self._read_geometry_group(
+                h5,
+                "/legacy/optgeom/current",
+                coordinates_name="coordinates",
+                source_default="hdf5_legacy",
+            )
+            if legacy_current:
+                legacy_current["source"] = "hdf5_legacy"
+                geometry["current"] = legacy_current
+        return geometry
+
+    def _read_geometry_group(
+        self,
+        h5,
+        path: str,
+        *,
+        coordinates_name: str,
+        source_default: str,
+    ) -> dict:
+        if path not in h5 or _is_dataset(h5[path]):
+            return {}
+
+        natom = _scalar(h5, f"{path}/natom", None)
+        labels = _dataset_list(h5, f"{path}/labels")
+        coordinates = _dataset_list(h5, f"{path}/{coordinates_name}")
+        if coordinates is None and coordinates_name != "coordinates":
+            coordinates = _dataset_list(h5, f"{path}/coordinates")
+        if natom is None or labels is None or coordinates is None:
+            return {}
+
+        natom = int(natom)
+        if natom <= 0 or len(labels) < natom or len(coordinates) < 3 * natom:
+            return {}
+
+        symbols = [_decode_bdf_label(labels[idx]) for idx in range(natom)]
+        coordinate_rows = []
+        atoms = []
+        for idx, symbol in enumerate(symbols):
+            xyz = [
+                float(coordinates[3 * idx]),
+                float(coordinates[3 * idx + 1]),
+                float(coordinates[3 * idx + 2]),
+            ]
+            coordinate_rows.append(xyz)
+            atoms.append(
+                {
+                    "element": symbol,
+                    "x": xyz[0],
+                    "y": xyz[1],
+                    "z": xyz[2],
+                    "units": "bohr",
+                }
+            )
+
+        attrs = _attrs_to_dict(h5[path])
+        result = {
+            "natom": natom,
+            "labels": symbols,
+            "coordinates_bohr": coordinate_rows,
+            "atoms": atoms,
+            "source": str(attrs.get("source") or source_default),
+            "optimizer": attrs.get("optimizer"),
+            "attrs": attrs,
+        }
+        step_index = _scalar(h5, f"{path}/step_index", None)
+        if step_index is None:
+            step_index = _scalar(h5, f"{path}/igeom", None)
+        if step_index is not None:
+            result["step_index"] = int(step_index)
+        return result
+
+    def _read_optimization_result(self, h5, base: str) -> dict:
+        opt_path = f"{base}/optimization"
+        if opt_path not in h5 or _is_dataset(h5[opt_path]):
+            return {}
+
+        attrs = _attrs_to_dict(h5[opt_path])
+        result = {}
+        converged = _scalar(h5, f"{opt_path}/converged", None)
+        if converged is not None:
+            result["converged"] = bool(converged)
+        n_steps = _scalar(h5, f"{opt_path}/n_steps", None)
+        if n_steps is not None:
+            result["n_steps"] = int(n_steps)
+        max_steps = _scalar(h5, f"{opt_path}/max_steps", None)
+        if max_steps is not None:
+            result["max_steps"] = int(max_steps)
+        info_code = _scalar(h5, f"{opt_path}/info_code", None)
+        if info_code is not None:
+            result["info_code"] = int(info_code)
+        if attrs.get("info_label") is not None:
+            result["info_label"] = attrs.get("info_label")
+        if attrs.get("optimizer") is not None:
+            result["optimizer"] = attrs.get("optimizer")
+        if attrs.get("source") is not None:
+            result["source"] = attrs.get("source")
+        if attrs:
+            result["attrs"] = attrs
+        return result
+
+    def _read_tddft_result(self, h5, base: str) -> dict:
+        tddft_path = f"{base}/tddft"
+        states_path = f"{tddft_path}/states"
+        if tddft_path not in h5 or _is_dataset(h5[tddft_path]):
+            return {}
+
+        result: dict = {}
+        attrs = _attrs_to_dict(h5[tddft_path])
+        for key in (
+            "itda",
+            "tda",
+            "isf",
+            "n_roots_requested",
+            "n_roots_found",
+            "imaginary_complex_count",
+            "negative_excitation_count",
+        ):
+            value = _scalar(h5, f"{tddft_path}/{key}", None)
+            if value is None:
+                continue
+            if key == "tda":
+                result[key] = bool(value)
+            else:
+                result[key] = int(value)
+        if attrs:
+            result["attrs"] = attrs
+
+        root_index = _dataset_list(h5, f"{states_path}/root_index")
+        energy_ev = _dataset_list(h5, f"{states_path}/energy_ev")
+        wavelength_nm = _dataset_list(h5, f"{states_path}/wavelength_nm")
+        oscillator = _dataset_list(h5, f"{states_path}/oscillator_strength")
+        if not root_index or energy_ev is None or wavelength_nm is None or oscillator is None:
+            return result
+
+        n_states = min(len(root_index), len(energy_ev), len(wavelength_nm), len(oscillator))
+        quality_flag = _dataset_list(h5, f"{states_path}/quality_flag") or []
+        delta_s2 = _dataset_list(h5, f"{states_path}/delta_s2") or []
+        dominant_percent = _dataset_list(h5, f"{states_path}/dominant_percent") or []
+        ipa_ev = _dataset_list(h5, f"{states_path}/ipa_ev") or []
+        ova = _dataset_list(h5, f"{states_path}/ova") or []
+        irrep_index = _dataset_list(h5, f"{states_path}/irrep_index") or []
+        state_index_in_irrep = _dataset_list(h5, f"{states_path}/state_index_in_irrep") or []
+        states_attrs = _attrs_to_dict(h5[states_path]) if states_path in h5 else {}
+
+        states = []
+        for idx in range(n_states):
+            state = {
+                "index": int(root_index[idx]),
+                "energy_ev": float(energy_ev[idx]),
+                "wavelength_nm": float(wavelength_nm[idx]),
+                "oscillator_strength": float(oscillator[idx]),
+            }
+            qflag = _list_get(quality_flag, idx)
+            if qflag is not None:
+                state["quality_flag"] = int(qflag)
+                state["quality"] = _tddft_quality_label(int(qflag))
+            _optional_float(state, "delta_s2", delta_s2, idx)
+            _optional_float(state, "dominant_percent", dominant_percent, idx)
+            _optional_float(state, "ipa_ev", ipa_ev, idx)
+            _optional_float(state, "ova", ova, idx)
+            _optional_int(state, "irrep_index", irrep_index, idx)
+            _optional_int(state, "state_index_in_irrep", state_index_in_irrep, idx)
+            states.append(state)
+
+        result["states"] = states
+        if states_attrs:
+            result["states_attrs"] = states_attrs
+        return result
 
     def _read_restart(self, h5) -> dict:
         """Read /restart/{scratch,modules,assets} (Phase 6 restart contract).
