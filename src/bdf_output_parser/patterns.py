@@ -30,6 +30,7 @@ ENERGY_MP2 = re.compile(rf'MP2\s+total\s+energy\s*=\s*({_FLOAT})', re.IGNORECASE
 ENERGY_KINETIC = re.compile(rf'Kinetic\s+energy\s*=\s*({_FLOAT})', re.IGNORECASE)
 ENERGY_POTENTIAL = re.compile(rf'Potential\s+energy\s*=\s*({_FLOAT})', re.IGNORECASE)
 ENERGY_SCF = re.compile(rf'SCF\s+energy\s*[:=]\s*({_FLOAT})', re.IGNORECASE)
+ENERGY_SCF_ETOT = re.compile(rf'E_tot\s*=\s*({_FLOAT})')
 
 # =============================================================================
 # Convergence — BDF 正常终止 / SCF 收敛

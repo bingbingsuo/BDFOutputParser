@@ -154,7 +154,7 @@ class BDFOutputParser:
         mp2 = self._match_float(content, P.ENERGY_MP2)
         kinetic = self._match_float(content, P.ENERGY_KINETIC)
         potential = self._match_float(content, P.ENERGY_POTENTIAL)
-        scf = self._match_float(content, P.ENERGY_SCF)
+        scf = self._extract_scf_energy(content, task_type)
 
         return EnergyData(
             total_energy=total,
@@ -631,6 +631,20 @@ class BDFOutputParser:
     # SCF
     # =========================================================================
 
+    def _extract_scf_energy(self, content: str, task_type: TaskType) -> Optional[float]:
+        """Extract final SCF energy from BDF output.
+
+        BDF simple HF/DFT energy jobs commonly print the converged SCF energy
+        as ``E_tot = ...`` instead of a literal ``SCF energy = ...`` line.
+        Keep explicit SCF-energy labels first, then fall back to ``E_tot``.
+        """
+        explicit = self._match_float(content, P.ENERGY_SCF)
+        if explicit is not None:
+            return explicit
+        if task_type == TaskType.GEOMETRY_OPT:
+            return self._find_last_match(content, [P.ENERGY_SCF_ETOT])
+        return self._match_float(content, P.ENERGY_SCF_ETOT)
+
     def _extract_scf(self, content: str) -> SCFData:
         converged = bool(P.CONVERGENCE_NORMAL.search(content)) or \
                     bool(P.CONVERGENCE_BDF.search(content))
@@ -650,7 +664,8 @@ class BDFOutputParser:
         scf_iters = list(P.SCF_ITERATION.finditer(content))
         n_iterations = int(scf_iters[-1].group(1)) if scf_iters else 0
 
-        final_energy = self._match_float(content, P.ENERGY_SCF)
+        task_type = self._detect_task_type(content)
+        final_energy = self._extract_scf_energy(content, task_type)
         diis_error = self._match_float(content, P.SCF_DIIS_ERROR)
 
         homo = self._match_float(content, P.HOMO_ENERGY)

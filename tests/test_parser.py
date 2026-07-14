@@ -49,6 +49,29 @@ class TestEnergyExtraction:
         r = parser.parse("SCF energy = -99.5")
         assert r.energies.scf_energy == -99.5
 
+    def test_scf_energy_falls_back_to_bdf_e_tot(self, parser, energy_output):
+        r = parser.parse(energy_output)
+        assert r.energies.scf_energy == pytest.approx(-76.12345678, rel=1e-6)
+        assert r.scf.final_energy == pytest.approx(-76.12345678, rel=1e-6)
+
+    def test_scf_energy_prefers_explicit_label(self, parser):
+        r = parser.parse("E_tot = -100.0\nSCF energy = -99.5")
+        assert r.energies.scf_energy == -99.5
+        assert r.scf.final_energy == -99.5
+
+    def test_geometry_opt_scf_energy_uses_final_e_tot(self, parser):
+        output = """
+ Geometry Optimization step : 1
+ E_tot = -75.0
+ Geometry Optimization step : 2
+ E_tot = -76.0
+ Good Job, Geometry Optimization converged!
+ Congratulations! BDF normal termination
+"""
+        r = parser.parse(output)
+        assert r.energies.scf_energy == -76.0
+        assert r.scf.final_energy == -76.0
+
     def test_mp2_energy(self, parser):
         r = parser.parse("MP2 total energy = -105.5")
         assert r.energies.mp2_energy == -105.5
