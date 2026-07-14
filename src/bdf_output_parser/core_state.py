@@ -249,10 +249,32 @@ class BDFCoreStateInspector:
         if "/diagnostics" not in h5:
             return out
         for module in h5["/diagnostics"].keys():
+            module_data = {}
             lf = f"/diagnostics/{module}/last_failure"
             if lf in h5:
-                out[module] = {"last_failure": _attrs_to_dict(h5[lf])}
+                module_data["last_failure"] = _attrs_to_dict(h5[lf])
+            lw = f"/diagnostics/{module}/last_warning"
+            if lw in h5:
+                module_data["last_warning"] = _attrs_to_dict(h5[lw])
+            failures = self._read_diagnostic_records(h5, f"/diagnostics/{module}/failures")
+            if failures:
+                module_data["failures"] = failures
+            warnings = self._read_diagnostic_records(h5, f"/diagnostics/{module}/warnings")
+            if warnings:
+                module_data["warnings"] = warnings
+            if module_data:
+                out[module] = module_data
         return out
+
+    def _read_diagnostic_records(self, h5, base: str) -> dict:
+        records = {}
+        if base not in h5:
+            return records
+        for name in h5[base].keys():
+            leaf = h5[f"{base}/{name}"]
+            if not _is_dataset(leaf):
+                records[name] = _attrs_to_dict(leaf)
+        return records
 
     def _read_provenance(self, h5) -> dict:
         """只拉 agent 关心的关键 scalar，不递归整个嵌套。"""

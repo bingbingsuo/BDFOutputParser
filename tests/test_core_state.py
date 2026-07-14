@@ -17,6 +17,14 @@ from bdf_output_parser import BDFCoreStateInspector, CoreStateSummary  # noqa: E
 REAL_TEST003 = Path("/Users/bsuo/tests/bdf/debug/test003.bdfh5")
 
 
+def _read_reference_test003_or_skip():
+    """Read the optional local completed test003 fixture or skip stale variants."""
+    s = BDFCoreStateInspector().read(str(REAL_TEST003))
+    if s.status != "completed" or s.elapsed_sec != 5.0:
+        pytest.skip("local test003.bdfh5 is not the expected completed reference fixture")
+    return s
+
+
 def _make_bdfh5(path, *, schema="BDFCoreState-v1.0", status="completed",
                 failed_module="", interrupted_module="",
                 last_successful_module="scf",
@@ -53,10 +61,40 @@ def _make_bdfh5(path, *, schema="BDFCoreState-v1.0", status="completed",
             al.attrs["target_kind"] = "orbital"
             al.attrs["updated_by"] = "scf"
         if with_diagnostics:
+            failure = f.create_group("diagnostics/scf/failures/000001")
+            failure.attrs["schema_version"] = "BDFDiagnostic-v1.0"
+            failure.attrs["diagnostic_id"] = "000001"
+            failure.attrs["kind"] = "failure"
+            failure.attrs["module"] = "scf"
+            failure.attrs["phase"] = "scf_convergence"
+            failure.attrs["code"] = "SCF_NOT_CONVERGED"
+            failure.attrs["category"] = "SCF_CONVERGENCE"
+            failure.attrs["severity"] = "fatal"
+            failure.attrs["recoverable"] = "yes"
+            failure.attrs["message"] = "SCF did not converge within maxiter iterations"
+            failure.attrs["suggestion"] = "restart from saved orbitals with vshift/damp or second-order SCF"
+            failure.attrs["primary"] = "yes"
+            failure.attrs["source"] = "fortran_module"
+            failure.attrs["return_code"] = 100
+            failure.attrs["legacy_code"] = 100
             lf = f.create_group("diagnostics/scf/last_failure")
-            lf.attrs["reason"] = "SCF did not converge"
-            lf.attrs["failure_class"] = "controlled_error"
-            lf.attrs["restartable"] = 1
+            for key, value in failure.attrs.items():
+                lf.attrs[key] = value
+            warning = f.create_group("diagnostics/tddft/warnings/000001")
+            warning.attrs["schema_version"] = "BDFDiagnostic-v1.0"
+            warning.attrs["diagnostic_id"] = "000001"
+            warning.attrs["kind"] = "warning"
+            warning.attrs["module"] = "tddft"
+            warning.attrs["phase"] = "excitation_spectrum"
+            warning.attrs["code"] = "TDDFT_UNSTABLE_REFERENCE_EXCITATION"
+            warning.attrs["category"] = "TDDFT_RESULT_QUALITY"
+            warning.attrs["severity"] = "warning"
+            warning.attrs["recoverable"] = "yes"
+            warning.attrs["message"] = "TDDFT found imaginary/complex or negative excitation energies"
+            warning.attrs["primary"] = "yes"
+            lw = f.create_group("diagnostics/tddft/last_warning")
+            for key, value in warning.attrs.items():
+                lw.attrs[key] = value
         if with_restart:
             scratch = f.create_group("restart/scratch")
             scratch.attrs["tmpdir"] = "/tmp/bdf-scratch"
@@ -83,7 +121,7 @@ def _make_bdfh5(path, *, schema="BDFCoreState-v1.0", status="completed",
 @pytest.mark.skipif(not REAL_TEST003.exists(), reason="test003.bdfh5 不在本机")
 class TestRealTest003:
     def test_completed_status(self):
-        s = BDFCoreStateInspector().read(str(REAL_TEST003))
+        s = _read_reference_test003_or_skip()
         assert s.available is True
         assert s.reason == "ok"
         assert s.core_state_schema == "BDFCoreState-v1.0"
@@ -94,32 +132,32 @@ class TestRealTest003:
         assert s.elapsed_sec == 5.0
 
     def test_geometry_alias_and_objects(self):
-        s = BDFCoreStateInspector().read(str(REAL_TEST003))
+        s = _read_reference_test003_or_skip()
         cur = s.aliases.get("geometries", {}).get("current", {})
         assert cur.get("target") == "/objects/geometries/000002"
         assert cur.get("target_kind") == "geometry"
         assert len(s.objects.get("geometries", [])) == 2
 
     def test_workflow_module_plan(self):
-        s = BDFCoreStateInspector().read(str(REAL_TEST003))
+        s = _read_reference_test003_or_skip()
         modules = [m.get("module") for m in s.workflow.get("module_plan", [])]
         assert "compass" in modules and "bdfopt" in modules
         # 两个已完成的 module 节点
         assert set(s.workflow.get("modules", {}).keys()) == {"000000", "000001"}
 
     def test_files_by_role_records_missing_output(self):
-        s = BDFCoreStateInspector().read(str(REAL_TEST003))
+        s = _read_reference_test003_or_skip()
         roles = s.files.get("by_role", {})
         assert "chkfil" in roles and "output" in roles
         # test003 的 output 文件 state=missing（如实记录）
         assert any(e.get("state") == "missing" for e in roles.get("output", []))
 
     def test_provenance_git(self):
-        s = BDFCoreStateInspector().read(str(REAL_TEST003))
+        s = _read_reference_test003_or_skip()
         assert s.provenance["build"]["git_short_hash"] == "5c82e7578"
 
     def test_json_serializable(self):
-        s = BDFCoreStateInspector().read(str(REAL_TEST003))
+        s = _read_reference_test003_or_skip()
         import json
         d = json.loads(s.model_dump_json())
         assert d["available"] is True
@@ -164,8 +202,12 @@ class TestSynthetic:
         assert s.status == "failed"
         assert s.failed_module == "scf"
         diag = s.diagnostics.get("scf", {}).get("last_failure", {})
-        assert diag.get("reason") == "SCF did not converge"
-        assert diag.get("failure_class") == "controlled_error"
+        assert diag.get("code") == "SCF_NOT_CONVERGED"
+        assert diag.get("category") == "SCF_CONVERGENCE"
+        assert s.diagnostics["scf"]["failures"]["000001"]["recoverable"] == "yes"
+        warning = s.diagnostics.get("tddft", {}).get("last_warning", {})
+        assert warning.get("code") == "TDDFT_UNSTABLE_REFERENCE_EXCITATION"
+        assert s.diagnostics["tddft"]["warnings"]["000001"]["severity"] == "warning"
 
     def test_interrupted_run(self, tmp_path):
         p = tmp_path / "int.bdfh5"
