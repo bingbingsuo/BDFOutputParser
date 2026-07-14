@@ -9,7 +9,7 @@ BDF Output Parser — Pydantic v2 数据模型
 from __future__ import annotations
 
 from enum import Enum
-from typing import Literal, Optional
+from typing import Any, Literal, Optional
 
 from pydantic import BaseModel, Field, computed_field
 
@@ -214,6 +214,81 @@ class BDFParseResult(BaseModel):
     def excited_states(self) -> list[ExcitedState]:
         """展平所有 TDDFT 块（向后兼容）"""
         return [s for blk in self.tddft_blocks for s in blk.states]
+
+
+# =============================================================================
+# Unified Result — .out + .out.tmp + .bdfh5 normalized interface
+# =============================================================================
+
+class UnifiedRunStatus(str, Enum):
+    """BDF execution state normalized from HDF5/output/process evidence."""
+
+    COMPLETED = "completed"
+    FAILED = "failed"
+    INTERRUPTED = "interrupted"
+    RUNNING = "running"
+    CRASHED = "crashed"
+    KILLED = "killed"
+    UNKNOWN = "unknown"
+
+
+class UnifiedParseStatus(str, Enum):
+    """Parser coverage state for available BDF artifacts."""
+
+    COMPLETE = "complete"
+    PARTIAL = "partial"
+    FAILED = "failed"
+    EMPTY = "empty"
+    UNAVAILABLE = "unavailable"
+
+
+class UnifiedResultStatus(str, Enum):
+    """Whether the result is usable for the requested calculation step."""
+
+    USABLE = "usable"
+    USABLE_WITH_WARNINGS = "usable_with_warnings"
+    INCOMPLETE_RESTARTABLE = "incomplete_restartable"
+    NOT_USABLE = "not_usable"
+    UNKNOWN = "unknown"
+
+
+class ConsistencyWarning(BaseModel):
+    """Structured warning for conflicting HDF5/output facts."""
+
+    field: str
+    hdf5_value: Any = None
+    output_value: Any = None
+    tolerance: float | None = None
+    severity: str = "warning"
+    message: str = ""
+
+
+class BDFUnifiedResult(BaseModel):
+    """Versioned result interface consumed by BDFAssistant.
+
+    This model is owned by BDFOutputParser.  It intentionally stores domain
+    sections as dictionaries in the first slice so new BDF modules can be added
+    without changing the top-level API.
+    """
+
+    schema_version: str = "BDFUnifiedResult-v0.1"
+    parser_version: str = ""
+    task_type: str | None = None
+    run_status: UnifiedRunStatus = UnifiedRunStatus.UNKNOWN
+    parse_status: UnifiedParseStatus = UnifiedParseStatus.UNAVAILABLE
+    result_status: UnifiedResultStatus = UnifiedResultStatus.UNKNOWN
+    success: bool = False
+
+    execution: dict[str, Any] = Field(default_factory=dict)
+    results: dict[str, Any] = Field(default_factory=dict)
+    diagnostics: dict[str, Any] = Field(default_factory=dict)
+    restart: dict[str, Any] = Field(default_factory=dict)
+    artifacts: dict[str, Any] = Field(default_factory=dict)
+    quality: dict[str, Any] = Field(default_factory=dict)
+    field_sources: dict[str, str] = Field(default_factory=dict)
+    consistency_warnings: list[ConsistencyWarning] = Field(default_factory=list)
+    raw_refs: dict[str, Any] = Field(default_factory=dict)
+    extensions: dict[str, Any] = Field(default_factory=dict)
 
 
 # =============================================================================

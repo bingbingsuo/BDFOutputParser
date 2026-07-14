@@ -9,12 +9,14 @@ from __future__ import annotations
 
 import re
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 from .models import (
     AOLabel,
     Atom,
     BDFParseResult,
+    BDFUnifiedResult,
+    ConsistencyWarning,
     EnergyData,
     ExcitedState,
     FrequencyData,
@@ -28,6 +30,9 @@ from .models import (
     TaskType,
     TDDFTBlock,
     ThermochemistryData,
+    UnifiedParseStatus,
+    UnifiedResultStatus,
+    UnifiedRunStatus,
 )
 from . import patterns as P
 
@@ -116,6 +121,466 @@ class BDFOutputParser:
         result = self.parse(content)
         result.source_file = str(path)
         return result
+
+    def read(
+        self,
+        *,
+        out_path: str | Path | None = None,
+        out_tmp_path: str | Path | None = None,
+        hdf5_path: str | Path | None = None,
+        artifact_paths: dict[str, str] | None = None,
+        artifact_manifest: dict[str, Any] | None = None,
+    ) -> BDFUnifiedResult:
+        """Read BDF output artifacts into one parser-owned result model.
+
+        This first slice deliberately wraps existing readers:
+        ``parse(text)`` for ``.out`` and ``BDFCoreStateInspector`` for
+        ``.bdfh5``.  Missing optional files are recorded in ``raw_refs`` rather
+        than raised as exceptions.
+        """
+
+        output_text = self._read_optional_text(out_path)
+        out_tmp_text = self._read_optional_text(out_tmp_path)
+        parse_result = self.parse(output_text) if output_text is not None else None
+        core_summary = self._read_core_state(hdf5_path)
+
+        parse_status = self._unified_parse_status(parse_result, out_path)
+        output_run_status = self._run_status_from_output(parse_result, output_text)
+        hdf5_run_status = self._run_status_from_core_state(core_summary)
+
+        diagnostics = self._build_unified_diagnostics(
+            parse_result,
+            core_summary,
+            output_text,
+            out_tmp_text,
+        )
+        run_status = (
+            hdf5_run_status
+            or self._run_status_from_diagnostics(diagnostics)
+            or output_run_status
+            or UnifiedRunStatus.UNKNOWN
+        )
+        restart = self._build_unified_restart(
+            core_summary,
+            artifact_paths,
+            artifact_manifest,
+        )
+        consistency_warnings = self._build_consistency_warnings(
+            hdf5_run_status=hdf5_run_status,
+            output_run_status=output_run_status,
+            parse_result=parse_result,
+        )
+        result_status = self._unified_result_status(
+            run_status,
+            parse_status,
+            diagnostics,
+            restart,
+        )
+
+        field_sources = self._build_field_sources(parse_result, core_summary, restart)
+        raw_refs = self._build_raw_refs(out_path, out_tmp_path, hdf5_path)
+        results = self._build_results(parse_result)
+
+        return BDFUnifiedResult(
+            task_type=str(parse_result.task_type.value) if parse_result else None,
+            run_status=run_status,
+            parse_status=parse_status,
+            result_status=result_status,
+            success=result_status
+            in {UnifiedResultStatus.USABLE, UnifiedResultStatus.USABLE_WITH_WARNINGS},
+            execution=self._build_execution(core_summary),
+            results=results,
+            diagnostics=diagnostics,
+            restart=restart,
+            artifacts={
+                "paths": artifact_paths or {},
+                "manifest": artifact_manifest or {},
+            },
+            quality=self._build_quality(
+                parse_result,
+                diagnostics,
+                consistency_warnings,
+            ),
+            field_sources=field_sources,
+            consistency_warnings=consistency_warnings,
+            raw_refs=raw_refs,
+        )
+
+    @staticmethod
+    def _read_optional_text(path: str | Path | None) -> str | None:
+        if path is None:
+            return None
+        p = Path(path)
+        if not p.exists() or not p.is_file():
+            return None
+        return p.read_text(encoding="utf-8", errors="replace")
+
+    @staticmethod
+    def _read_core_state(path: str | Path | None) -> dict[str, Any] | None:
+        if path is None:
+            return None
+        p = Path(path)
+        if not p.exists() or not p.is_file():
+            return None
+        from .core_state import BDFCoreStateInspector
+
+        summary = BDFCoreStateInspector().read(str(p))
+        return summary.model_dump(mode="json")
+
+    @staticmethod
+    def _unified_parse_status(
+        parse_result: BDFParseResult | None,
+        out_path: str | Path | None,
+    ) -> UnifiedParseStatus:
+        if parse_result is None:
+            return UnifiedParseStatus.UNAVAILABLE
+        if parse_result.status == ParseStatus.SUCCESS:
+            return UnifiedParseStatus.COMPLETE
+        if parse_result.status == ParseStatus.PARTIAL:
+            return UnifiedParseStatus.PARTIAL
+        if parse_result.status == ParseStatus.PARSE_ERROR:
+            return UnifiedParseStatus.FAILED
+        return UnifiedParseStatus.EMPTY
+
+    @staticmethod
+    def _run_status_from_core_state(
+        core_summary: dict[str, Any] | None,
+    ) -> UnifiedRunStatus | None:
+        if not core_summary or not core_summary.get("available"):
+            return None
+        raw = str(core_summary.get("status") or "").lower()
+        if raw in {item.value for item in UnifiedRunStatus}:
+            return UnifiedRunStatus(raw)
+        return None
+
+    @staticmethod
+    def _run_status_from_output(
+        parse_result: BDFParseResult | None,
+        output_text: str | None,
+    ) -> UnifiedRunStatus | None:
+        if output_text and P.CONVERGENCE_BDF.search(output_text):
+            return UnifiedRunStatus.COMPLETED
+        if parse_result is None:
+            return None
+        if parse_result.status == ParseStatus.SUCCESS:
+            return UnifiedRunStatus.COMPLETED
+        if parse_result.status == ParseStatus.PARSE_ERROR:
+            return UnifiedRunStatus.FAILED
+        return None
+
+    @staticmethod
+    def _run_status_from_diagnostics(
+        diagnostics: dict[str, Any],
+    ) -> UnifiedRunStatus | None:
+        if diagnostics.get("primary_failure"):
+            return UnifiedRunStatus.FAILED
+        return None
+
+    @staticmethod
+    def _unified_result_status(
+        run_status: UnifiedRunStatus,
+        parse_status: UnifiedParseStatus,
+        diagnostics: dict[str, Any],
+        restart: dict[str, Any],
+    ) -> UnifiedResultStatus:
+        has_warnings = bool(diagnostics.get("warnings"))
+        has_restart = bool(
+            restart.get("assets")
+            or restart.get("scratch")
+            or restart.get("modules")
+        )
+        if run_status == UnifiedRunStatus.COMPLETED:
+            if parse_status in {
+                UnifiedParseStatus.COMPLETE,
+                UnifiedParseStatus.PARTIAL,
+            }:
+                if has_warnings:
+                    return UnifiedResultStatus.USABLE_WITH_WARNINGS
+                return UnifiedResultStatus.USABLE
+            return UnifiedResultStatus.UNKNOWN
+        if run_status in {UnifiedRunStatus.FAILED, UnifiedRunStatus.INTERRUPTED}:
+            if has_restart:
+                return UnifiedResultStatus.INCOMPLETE_RESTARTABLE
+            return UnifiedResultStatus.NOT_USABLE
+        return UnifiedResultStatus.UNKNOWN
+
+    @staticmethod
+    def _build_results(parse_result: BDFParseResult | None) -> dict[str, Any]:
+        if parse_result is None:
+            return {}
+        return {
+            "energies": parse_result.energies.model_dump(mode="json"),
+            "scf": parse_result.scf.model_dump(mode="json"),
+            "geometry": parse_result.geometry.model_dump(mode="json"),
+            "optimization": parse_result.optimization.model_dump(mode="json"),
+            "frequency": parse_result.frequencies.model_dump(mode="json"),
+            "thermochemistry": parse_result.thermochemistry.model_dump(mode="json"),
+            "tddft": {
+                "blocks": [
+                    block.model_dump(mode="json")
+                    for block in parse_result.tddft_blocks
+                ],
+                "excited_states": [
+                    state.model_dump(mode="json")
+                    for state in parse_result.excited_states
+                ],
+            },
+        }
+
+    @staticmethod
+    def _build_execution(core_summary: dict[str, Any] | None) -> dict[str, Any]:
+        if not core_summary:
+            return {}
+        return {
+            "core_state_summary": core_summary,
+            "run": {
+                "status": core_summary.get("status"),
+                "current_module": core_summary.get("current_module"),
+                "last_successful_module": core_summary.get("last_successful_module"),
+                "failed_module": core_summary.get("failed_module"),
+                "interrupted_module": core_summary.get("interrupted_module"),
+                "restartable": core_summary.get("restartable"),
+                "elapsed_sec": core_summary.get("elapsed_sec"),
+            },
+            "workflow": core_summary.get("workflow") or {},
+            "provenance": core_summary.get("provenance") or {},
+        }
+
+    def _build_unified_diagnostics(
+        self,
+        parse_result: BDFParseResult | None,
+        core_summary: dict[str, Any] | None,
+        output_text: str | None,
+        out_tmp_text: str | None,
+    ) -> dict[str, Any]:
+        diagnostics = {
+            "status": None,
+            "primary_failure": None,
+            "warnings": [],
+            "secondary_diagnostics": [],
+            "evidence": [],
+            "recoverable": None,
+            "suggested_actions": [],
+        }
+
+        if core_summary:
+            diagnostics["status"] = core_summary.get("status")
+            self._add_core_state_diagnostics(diagnostics, core_summary)
+
+        if parse_result:
+            for error in parse_result.errors:
+                diagnostics["secondary_diagnostics"].append(
+                    {"source": "output", "message": error, "severity": "error"}
+                )
+            for warning in parse_result.warnings:
+                diagnostics["warnings"].append(
+                    {"source": "output", "message": warning, "severity": "warning"}
+                )
+
+        for source, text in (
+            ("output", output_text),
+            ("output_tmp", out_tmp_text),
+        ):
+            if not text:
+                continue
+            blocks = self._extract_structured_blocks(text, "BDF_ERROR")
+            for body in blocks:
+                record = {
+                    "source": source,
+                    "message": body.strip(),
+                    "severity": "error",
+                }
+                if diagnostics["primary_failure"] is None:
+                    diagnostics["primary_failure"] = record
+                else:
+                    diagnostics["secondary_diagnostics"].append(record)
+            for body in self._extract_structured_blocks(text, "BDF_WARNING"):
+                diagnostics["warnings"].append(
+                    {
+                        "source": source,
+                        "message": body.strip(),
+                        "severity": "warning",
+                    }
+                )
+
+        primary = diagnostics.get("primary_failure")
+        if isinstance(primary, dict):
+            diagnostics["recoverable"] = primary.get("recoverable")
+            suggestion = primary.get("suggestion")
+            if suggestion:
+                diagnostics["suggested_actions"].append(suggestion)
+        return diagnostics
+
+    def _add_core_state_diagnostics(
+        self,
+        diagnostics: dict[str, Any],
+        core_summary: dict[str, Any],
+    ) -> None:
+        records = core_summary.get("diagnostics") or {}
+        if not isinstance(records, dict):
+            return
+        for module, module_data in records.items():
+            if not isinstance(module_data, dict):
+                continue
+            failure = self._latest_diagnostic_record(module_data, "failure")
+            if failure:
+                normalized = dict(failure)
+                normalized.setdefault("module", module)
+                normalized.setdefault("source", "hdf5")
+                diagnostics["primary_failure"] = normalized
+                diagnostics["evidence"].append(f"core_state:/diagnostics/{module}/last_failure")
+            warning = self._latest_diagnostic_record(module_data, "warning")
+            if warning:
+                normalized_warning = dict(warning)
+                normalized_warning.setdefault("module", module)
+                normalized_warning.setdefault("source", "hdf5")
+                diagnostics["warnings"].append(normalized_warning)
+                diagnostics["evidence"].append(f"core_state:/diagnostics/{module}/last_warning")
+
+    @staticmethod
+    def _latest_diagnostic_record(
+        module_data: dict[str, Any],
+        kind: str,
+    ) -> dict[str, Any] | None:
+        last = module_data.get(f"last_{kind}")
+        if isinstance(last, dict) and last:
+            return last
+        records = module_data.get(f"{kind}s")
+        if not isinstance(records, dict) or not records:
+            return None
+        latest_key = sorted(str(key) for key in records)[-1]
+        latest = records.get(latest_key)
+        return latest if isinstance(latest, dict) else None
+
+    @staticmethod
+    def _extract_structured_blocks(text: str, tag: str) -> list[str]:
+        pattern = re.compile(rf"\[{tag}\](.*?)\[/{tag}\]", re.IGNORECASE | re.DOTALL)
+        return [match.group(1) for match in pattern.finditer(text)]
+
+    @staticmethod
+    def _build_unified_restart(
+        core_summary: dict[str, Any] | None,
+        artifact_paths: dict[str, str] | None,
+        artifact_manifest: dict[str, Any] | None,
+    ) -> dict[str, Any]:
+        restart = {}
+        if core_summary and isinstance(core_summary.get("restart"), dict):
+            restart.update(core_summary["restart"])
+        if artifact_paths:
+            restart.setdefault("artifact_paths", artifact_paths)
+        if artifact_manifest:
+            restart.setdefault("artifact_manifest", artifact_manifest)
+        return restart
+
+    @staticmethod
+    def _build_field_sources(
+        parse_result: BDFParseResult | None,
+        core_summary: dict[str, Any] | None,
+        restart: dict[str, Any],
+    ) -> dict[str, str]:
+        sources = {}
+        if core_summary and core_summary.get("available"):
+            sources["run_status"] = "hdf5"
+            if core_summary.get("diagnostics"):
+                sources["diagnostics.primary_failure"] = "hdf5"
+        elif parse_result:
+            sources["run_status"] = "output"
+        if parse_result:
+            if parse_result.energies.total_energy is not None:
+                sources["results.energies.total_energy"] = "output"
+            if parse_result.energies.scf_energy is not None:
+                sources["results.energies.scf_energy"] = "output"
+            if parse_result.scf:
+                sources["results.scf.converged"] = "output"
+            if parse_result.geometry.atoms:
+                sources["results.geometry.final"] = "output"
+            if parse_result.optimization.n_steps > 0:
+                sources["results.optimization.converged"] = "output"
+            if parse_result.frequencies.frequencies:
+                sources["results.frequency.frequencies"] = "output"
+            if parse_result.tddft_blocks:
+                sources["results.tddft.states"] = "output"
+        if restart:
+            if core_summary and core_summary.get("restart"):
+                sources["restart.assets"] = "hdf5"
+            else:
+                sources["restart.assets"] = "assistant_manifest"
+        return sources
+
+    @staticmethod
+    def _build_raw_refs(
+        out_path: str | Path | None,
+        out_tmp_path: str | Path | None,
+        hdf5_path: str | Path | None,
+    ) -> dict[str, Any]:
+        def ref(path: str | Path | None) -> dict[str, Any]:
+            if path is None:
+                return {"path": None, "exists": False}
+            p = Path(path)
+            return {
+                "path": str(p),
+                "exists": p.exists(),
+                "size": p.stat().st_size if p.exists() else None,
+            }
+
+        return {
+            "out": ref(out_path),
+            "out_tmp": ref(out_tmp_path),
+            "hdf5": ref(hdf5_path),
+        }
+
+    @staticmethod
+    def _build_consistency_warnings(
+        *,
+        hdf5_run_status: UnifiedRunStatus | None,
+        output_run_status: UnifiedRunStatus | None,
+        parse_result: BDFParseResult | None,
+    ) -> list[ConsistencyWarning]:
+        warnings = []
+        if (
+            hdf5_run_status
+            and output_run_status
+            and hdf5_run_status != output_run_status
+        ):
+            warnings.append(
+                ConsistencyWarning(
+                    field="run_status",
+                    hdf5_value=hdf5_run_status.value,
+                    output_value=output_run_status.value,
+                    severity="warning",
+                    message="HDF5 run status and output-derived status disagree.",
+                )
+            )
+        if parse_result and parse_result.scf.final_energy is not None:
+            total = parse_result.energies.total_energy
+            scf = parse_result.scf.final_energy
+            if total is not None and abs(total - scf) > 1e-8:
+                warnings.append(
+                    ConsistencyWarning(
+                        field="results.energies.scf_energy",
+                        hdf5_value=None,
+                        output_value=scf,
+                        tolerance=1e-8,
+                        severity="info",
+                        message="Output total energy and SCF final energy differ.",
+                    )
+                )
+        return warnings
+
+    @staticmethod
+    def _build_quality(
+        parse_result: BDFParseResult | None,
+        diagnostics: dict[str, Any],
+        consistency_warnings: list[ConsistencyWarning],
+    ) -> dict[str, Any]:
+        quality = {
+            "warnings_count": len(diagnostics.get("warnings") or []),
+            "consistency_warnings_count": len(consistency_warnings),
+        }
+        if parse_result:
+            quality["n_imaginary_frequencies"] = parse_result.frequencies.n_imaginary
+            quality["frequency_stable"] = parse_result.frequencies.is_stable
+        return quality
 
     # =========================================================================
     # Task type detection
